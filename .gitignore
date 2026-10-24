@@ -15,3 +15,6 @@ tools/shots/
 
 # ── 一次性修复脚本的中间报告 ──
 tools/report_*.txt
+# ── 发布产物（dotnet publish 的输出，随时能重出）──
+dist/
+publish/
