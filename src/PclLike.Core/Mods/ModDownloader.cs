@@ -1,0 +1,970 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+
+namespace PclLike.Core.Mods;
+
+/// <summary>一个可下载的 Mod 版本。</summary>
+public sealed record ModDownloadCandidate
+{
+    /// <summary>平台：modrinth / curseforge。</summary>
+    public required string Platform { get; init; }
+
+    /// <summary>Mod 的项目 id 或 slug（Modrinth）／modId（CurseForge）。</summary>
+    public required string ProjectId { get; init; }
+
+    /// <summary>版本 id（Modrinth 的 version id）。</summary>
+    public required string VersionId { get; init; }
+
+    /// <summary>Mod 显示名（通常就是依赖 id）。</summary>
+    public required string Name { get; init; }
+
+    /// <summary>版本号。</summary>
+    public required string Version { get; init; }
+
+    /// <summary>文件名，写盘时用。</summary>
+    public required string FileName { get; init; }
+
+    public required string DownloadUrl { get; init; }
+
+    /// <summary>文件大小（字节），0 表示未知。</summary>
+    public long SizeBytes { get; init; }
+
+    public string? Sha1 { get; init; }
+
+    /// <summary>该版本支持的加载器。</summary>
+    public IReadOnlyList<string> Loaders { get; init; } = [];
+
+    /// <summary>该版本支持的 MC 版本。</summary>
+    public IReadOnlyList<string> GameVersions { get; init; } = [];
+
+    /// <summary>依赖 id 列表（Modrinth 会带，用于递归补依赖）。</summary>
+    public IReadOnlyList<string> DependencyIds { get; init; } = [];
+}
+
+/// <summary>
+/// 从公共 Mod 平台查找并下载 Mod。
+///
+/// 用 Modrinth 作为主源（完全公开，无需 API key），CurseForge 只做兜底
+/// （要 key，未配置时直接跳过，不报错打断整个流程）。
+///
+/// 设计要点：**每一步失败都返回 null / 空列表，不抛异常**。
+/// 自动补依赖会因为网络、限流、作者删包等各种原因失败，
+/// 抛异常会把"补了 3 个、第 4 个没找到"变成"整个安装失败"，
+/// 用户已经下好的那 3 个也白下了。
+/// </summary>
+public sealed class ModDownloader : IDisposable
+{
+    private const string ModrinthApi = "https://api.modrinth.com/v2";
+    private const string CurseForgeApi = "https://api.curseforge.com/v1";
+
+    private readonly HttpClient _http;
+    private readonly SocketsHttpHandler _handler;
+    private readonly Lazy<HttpClient> _fallback;
+
+    /// <summary>
+    /// 发一个 GET，自动在"直连"和"系统代理"两条通道之间切换。
+    ///
+    /// 网络环境千奇百怪：有代理的、没代理的、代理只对部分域名有效的。
+    /// 与其让用户去改配置，不如两条路都试一遍，记住哪条通就用哪条。
+    /// </summary>
+    private async Task<HttpResponseMessage> GetWithFallbackAsync(string url, CancellationToken ct)
+        => await GetWithFallbackAsync(url, HttpCompletionOption.ResponseContentRead, ct);
+
+    private async Task<HttpResponseMessage> GetWithFallbackAsync(
+        string url,
+        HttpCompletionOption completion,
+        CancellationToken ct)
+    {
+        // 已经知道代理好用就直接用
+        if (_preferProxy)
+        {
+            try
+            {
+                return await _fallback.Value.GetAsync(url, completion, ct);
+            }
+            catch (Exception ex) when (IsTransportFailure(ex) && !ct.IsCancellationRequested)
+            {
+                _preferProxy = false;   // 代理又不通了，退回直连
+            }
+        }
+
+        try
+        {
+            return await _http.GetAsync(url, completion, ct);
+        }
+        catch (Exception ex) when (IsTransportFailure(ex) && !ct.IsCancellationRequested)
+        {
+            // 直连挂了（典型：TLS 被中间设备切断），换代理再试一次。
+            //
+            // 注意：这里必须检查 ct，因为用户主动取消和"网络超时"都表现为
+            // OperationCanceledException。不区分的话，用户点了取消还会傻等一轮代理。
+            try
+            {
+                var resp = await _fallback.Value.GetAsync(url, completion, ct);
+                _preferProxy = true;
+                return resp;
+            }
+            catch when (!ct.IsCancellationRequested)
+            {
+                throw ex;   // 两条都不行，抛原始的直连错误更有诊断价值
+            }
+        }
+    }
+
+    /// <summary>判断是不是"传输层"故障 —— 这类才值得换通道重试。</summary>
+    private static bool IsTransportFailure(Exception ex)
+    {
+        // 连接超时：DNS 污染 / 直连被墙的典型表现，换代理基本都能救回来
+        if (ex is TaskCanceledException or OperationCanceledException) return true;
+
+        if (ex is HttpRequestException) return true;
+        if (ex is IOException) return true;
+
+        // 有些 TLS 错误被包在 AggregateException 或多层 InnerException 里
+        var inner = ex.InnerException;
+        while (inner is not null)
+        {
+            if (inner is IOException
+                or System.Security.Authentication.AuthenticationException
+                or TimeoutException
+                or TaskCanceledException)
+                return true;
+            inner = inner.InnerException;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 连接层回调：按可达性顺序尝试该主机名解析出的每个 IP。
+    ///
+    /// 作用范围要说清楚，别高估它：它只能解决"某个边缘 IP 的 TCP 握手挂死"，
+    /// 也就是连接建立阶段就失败的故障。
+    ///
+    /// 2026-10 实测 cdn.modrinth.com 的故障**不是**这一类：
+    ///   · DNS 只返回一个 IP（当时是 146.75.113.242 或 199.232.161.242），
+    ///     因此下面的多 IP 轮换实际退化为单 IP 直连，基本不会触发；
+    ///   · 该 IP 的 TCP 握手本身只要 0.08s，DNS 0.007s，TLS 0.17s —— 全都正常；
+    ///   · 真正的问题是**响应体阶段**：同一条 URL 四次测得总耗时
+    ///     1.3s / 45.8s / 59.0s / 64.9s，而完整下载成功那次只用了 1.58s
+    ///     （4.4 MB/s）。即边缘节点会间歇性先挂几十秒再吐数据。
+    ///
+    /// 连接层看不到响应体，所以这种间歇性卡顿在这里**必然修不掉**；
+    /// 只能靠足够大的超时（见 HttpClient.Timeout = 5 分钟）加上上层重试兜住，
+    /// 重试通常会落到一个正常速度的节点上。调用方 ModsViewModel 就是这么做的。
+    ///
+    /// 保留这个回调的理由：单元仍然有价值 —— 主机名解析出多个 IP 且其中某个
+    /// 握手挂死时，它能跳过坏的节点。只是它不再承担"修复 CDN 慢"的职责。
+    ///
+    /// 实现要点：ctx.DnsEndPoint 里的 Host 仍是原主机名，我们只替换"连到哪个
+    /// IP"。SNI 与证书校验由上层继续使用原主机名完成，TLS 不受影响。
+    /// 绝不能改写 URL 指向 IP 再手动设 Host 头 —— 那会让 SNI 跟着 IP 走，
+    /// 证书是按主机名签的，握手必然失败。
+    /// </summary>
+    private static async ValueTask<Stream> ConnectRotatingAsync(
+        System.Net.Http.SocketsHttpConnectionContext ctx, CancellationToken ct)
+    {
+        var host = ctx.DnsEndPoint.Host;
+        var port = ctx.DnsEndPoint.Port;
+
+        var ips = await OrderByReachabilityAsync(host, ct);
+
+        // 解析不出来或只有一条：直接连，让系统按原样处理
+        if (ips.Length == 0)
+        {
+            var sock0 = NewSocket(System.Net.Sockets.AddressFamily.InterNetwork);
+            try
+            {
+                await sock0.ConnectAsync(ctx.DnsEndPoint, ct);
+                return new System.Net.Sockets.NetworkStream(sock0, ownsSocket: true);
+            }
+            catch { sock0.Dispose(); throw; }
+        }
+
+        Exception? last = null;
+        foreach (var ip in ips)
+        {
+            if (ct.IsCancellationRequested) break;
+
+            var sock = NewSocket(ip.AddressFamily);
+            try
+            {
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                // 单个 IP 别等太久 —— 挂死的节点要快速跳过
+                linked.CancelAfter(TimeSpan.FromSeconds(6));
+
+                await sock.ConnectAsync(new System.Net.DnsEndPoint(ip.ToString(), port), linked.Token);
+                return new System.Net.Sockets.NetworkStream(sock, ownsSocket: true);
+            }
+            catch (Exception ex)
+            {
+                sock.Dispose();
+                last = ex;
+            }
+        }
+
+        throw last ?? new IOException($"无法连接 {host}:{port}");
+    }
+
+    private static System.Net.Sockets.Socket NewSocket(
+        System.Net.Sockets.AddressFamily family) =>
+        new(family, System.Net.Sockets.SocketType.Stream,
+            System.Net.Sockets.ProtocolType.Tcp) { NoDelay = true };
+
+    /// <summary>
+    /// 探测该主机名各 IP 的可达性，好用的排前面。
+    ///
+    /// 注意它测的是 **TCP 握手**，只能筛掉"连都连不上"的节点。实测 cdn.modrinth.com
+    /// 的间歇性卡顿发生在响应体阶段（握手 0.08s 正常，之后挂几十秒），本函数对此
+    /// 无感知 —— 别指望它来兜住慢节点。
+    ///
+    /// 结果按主机名缓存 —— 不能每个请求都探一遍，那会把下载拖垮。
+    /// 缓存的是"上次成功的那个 IP"，其余保持原序兜底。
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string>
+        _goodIpCache = new(StringComparer.OrdinalIgnoreCase);
+
+    private static async Task<System.Net.IPAddress[]> OrderByReachabilityAsync(
+        string host, CancellationToken ct)
+    {
+        System.Net.IPAddress[] ips;
+        try
+        {
+            ips = await System.Net.Dns.GetHostAddressesAsync(host, ct);
+        }
+        catch
+        {
+            return [];
+        }
+
+        if (ips.Length <= 1) return ips;
+
+        // 命中缓存：上次成功的 IP 排最前，其余保持原序
+        if (_goodIpCache.TryGetValue(host, out var cachedLiteral) &&
+            System.Net.IPAddress.TryParse(cachedLiteral, out var cachedIp) &&
+            ips.Any(x => x.Equals(cachedIp)))
+        {
+            return [cachedIp, .. ips.Where(x => !x.Equals(cachedIp))];
+        }
+
+        // 并发探测，每个 IP 给 3 秒
+        var probes = ips.Select(async ip =>
+        {
+            var sock = NewSocket(ip.AddressFamily);
+            try
+            {
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                linked.CancelAfter(TimeSpan.FromSeconds(3));
+                await sock.ConnectAsync(new System.Net.DnsEndPoint(ip.ToString(), 443), linked.Token);
+                return (ip, ok: true);
+            }
+            catch
+            {
+                return (ip, ok: false);
+            }
+            finally
+            {
+                sock.Dispose();
+            }
+        }).ToArray();
+
+        var results = await Task.WhenAll(probes);
+
+        var good = results.Where(r => r.ok).Select(r => r.ip).ToList();
+        var bad = results.Where(r => !r.ok).Select(r => r.ip).ToList();
+
+        if (good.Count > 0)
+            _goodIpCache[host] = good[0].ToString();
+
+        // 好的在前；全挂了就保持原序（让上层自己报错，错误更直观）
+        return good.Count > 0 ? [.. good, .. bad] : ips;
+    }
+
+    /// <summary>CurseForge API key。未设置时 CurseForge 相关方法直接返回空。</summary>
+    public string? CurseForgeApiKey { get; set; }
+
+    public ModDownloader(string? curseForgeApiKey = null, string? userAgent = null)
+    {
+        CurseForgeApiKey = curseForgeApiKey;
+
+        // 关键：用一个自定义的 SocketsHttpHandler，并且在遇到 TLS 故障时
+        // 能自动切换到"直连"重试。
+        //
+        // 为什么需要这个：开着 Clash / v2ray 这类代理软件的用户，Windows 会把
+        // 系统代理设成 127.0.0.1:7897，.NET 的 HttpClient 默认会走它。
+        // 但部分代理对 Modrinth 这类大响应体（几 KB～几 MB 的 JSON）
+        // 会中途断流，报 "Received an unexpected EOF or 0 bytes from the
+        // transport stream" —— 而同样的代理访问小接口却没问题。
+        // curl 不受影响是因为它不读 WinINET 的系统代理设置。
+        //
+        // 所以这里做两手准备：默认直连（绝大多数国内直连 Modrinth 是通的，
+        // 且比走代理稳），失败再退回系统代理。
+        _handler = new SocketsHttpHandler
+        {
+            UseProxy = false,                       // 默认直连
+            AutomaticDecompression =
+                System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate,
+            ConnectTimeout = TimeSpan.FromSeconds(8),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            // Fastly 有些边缘 IP 会 TCP 挂死，在连接层换 IP 重试
+            ConnectCallback = ConnectRotatingAsync,
+        };
+
+        _http = new HttpClient(_handler, disposeHandler: false)
+        {
+            Timeout = TimeSpan.FromMinutes(5),
+        };
+
+        // Modrinth 要求带可识别的 UA，否则可能被限流
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd(
+            userAgent ?? "PclLike/1.0 (Minecraft launcher)");
+
+        if (!string.IsNullOrWhiteSpace(CurseForgeApiKey))
+            _http.DefaultRequestHeaders.Add("x-api-key", CurseForgeApiKey);
+
+        // 备用通道：走系统代理（用户可能只有代理能出网）
+        _fallback = new Lazy<HttpClient>(() =>
+        {
+            var h = new HttpClient(new SocketsHttpHandler
+            {
+                UseProxy = true,
+                Proxy = System.Net.WebRequest.GetSystemWebProxy(),
+                DefaultProxyCredentials = System.Net.CredentialCache.DefaultCredentials,
+                AutomaticDecompression =
+                    System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate,
+                ConnectTimeout = TimeSpan.FromSeconds(15),
+                ConnectCallback = ConnectRotatingAsync,
+            })
+            {
+                Timeout = TimeSpan.FromMinutes(5),
+            };
+
+            h.DefaultRequestHeaders.UserAgent.ParseAdd(
+                userAgent ?? "PclLike/1.0 (Minecraft launcher)");
+
+            if (!string.IsNullOrWhiteSpace(CurseForgeApiKey))
+                h.DefaultRequestHeaders.Add("x-api-key", CurseForgeApiKey);
+
+            return h;
+        });
+    }
+
+    /// <summary>直连失败过且代理成功过 —— 之后的请求优先走代理。</summary>
+    private volatile bool _preferProxy;
+
+    // ────────────────────────────────────────────────────────────
+    // Modrinth
+    // ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// 查找满足加载器 + MC 版本的一个下载候选。
+    ///
+    /// <paramref name="dependencyId"/> 可以是 Modrinth 的 slug 或 project id ——
+    /// Fabric Mod 的 depends 里写的就是 slug（比如 `fabric-api`、`cloth-config`），
+    /// 直接用 slug 查正好对上。
+    /// </summary>
+    public async Task<ModDownloadCandidate?> FindModrinthAsync(
+        string dependencyId,
+        string mcVersion,
+        string loader,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(dependencyId)) return null;
+
+        try
+        {
+            // 先按 slug 直接拿项目，命中率最高
+            var project = await GetModrinthProjectAsync(dependencyId, ct);
+            if (project is null)
+            {
+                // 不是 slug 就搜索一次，取最相关的
+                project = await SearchModrinthAsync(dependencyId, ct);
+                if (project is null) return null;
+            }
+
+            return await PickModrinthVersionAsync(project, mcVersion, loader, ct);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { return null; }
+    }
+
+    private async Task<JsonObject?> GetModrinthProjectAsync(string idOrSlug, CancellationToken ct)
+    {
+        try
+        {
+            using var resp = await GetWithFallbackAsync($"{ModrinthApi}/project/{Uri.EscapeDataString(idOrSlug)}", ct);
+            if (!resp.IsSuccessStatusCode) return null;
+            return await resp.Content.ReadFromJsonAsync<JsonObject>(ct);
+        }
+        catch { return null; }
+    }
+
+    private async Task<JsonObject?> SearchModrinthAsync(string query, CancellationToken ct)
+    {
+        try
+        {
+            var facets = Uri.EscapeDataString("[[\"project_type:mod\"]]");
+            var url = $"{ModrinthApi}/search?query={Uri.EscapeDataString(query)}&limit=5&facets={facets}";
+
+            using var resp = await GetWithFallbackAsync(url, ct);
+            if (!resp.IsSuccessStatusCode) return null;
+
+            var json = await resp.Content.ReadFromJsonAsync<JsonObject>(ct);
+            var hits = json?["hits"]?.AsArray();
+            if (hits is null || hits.Count == 0) return null;
+
+            var slug = hits[0]?["slug"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(slug)) return null;
+
+            return await GetModrinthProjectAsync(slug, ct);
+        }
+        catch { return null; }
+    }
+
+    private async Task<ModDownloadCandidate?> PickModrinthVersionAsync(
+        JsonObject project, string mcVersion, string loader, CancellationToken ct)
+    {
+        var id = project["id"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(id)) return null;
+
+        var title = project["title"]?.GetValue<string>() ?? id;
+
+        // 用服务端的 loaders / game_versions 过滤，而不是自己拉 258 个版本再筛。
+        //
+        // 这不只是省流量：自己筛会在"一个都没匹配上"时退化成"取最新版"，
+        // 而最新版可能是给别的 MC 版本用的（Sodium 有 258 个版本，最新的是
+        // 给 26.3 的）。装错版本的 Mod 用户只会在启动时看到游戏崩溃，
+        // 根本联想不到是启动器装错了。让服务端过滤 = 没有匹配就是没有。
+        var qs = new List<string>();
+
+        var loaderLower = (loader ?? "").Trim().ToLowerInvariant();
+        if (loaderLower.Length > 0)
+        {
+            var names = LoaderQueryNames(loaderLower);
+            qs.Add("loaders=" + Uri.EscapeDataString(
+                "[" + string.Join(",", names.Select(n => $"\"{n}\"")) + "]"));
+        }
+
+        if (!string.IsNullOrWhiteSpace(mcVersion))
+            qs.Add("game_versions=" + Uri.EscapeDataString($"[\"{mcVersion.Trim()}\"]"));
+
+        var url = $"{ModrinthApi}/project/{Uri.EscapeDataString(id)}/version" +
+                  (qs.Count > 0 ? "?" + string.Join("&", qs) : "");
+
+        JsonArray? versions;
+        try
+        {
+            using var resp = await GetWithFallbackAsync(url, ct);
+            if (!resp.IsSuccessStatusCode) return null;
+            versions = await resp.Content.ReadFromJsonAsync<JsonArray>(ct);
+        }
+        catch { return null; }
+
+        if (versions is null || versions.Count == 0) return null;
+
+        // 服务端给的就是「匹配的版本」，取最新的一个。
+        // Modrinth 按发布时间倒序返回，所以第一个就是最新的 —— 不用自己排序。
+        foreach (var v in versions)
+        {
+            if (v is not JsonObject ver) continue;
+
+            var files = ver["files"]?.AsArray();
+            if (files is null || files.Count == 0) continue;
+
+            // 优先选 primary 文件
+            var file = files.FirstOrDefault(f => f?["primary"]?.GetValue<bool>() == true) ?? files[0];
+            var dlUrl = file?["url"]?.GetValue<string>();
+            var fname = file?["filename"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(dlUrl) || string.IsNullOrWhiteSpace(fname)) continue;
+
+            var loaders = (ver["loaders"]?.AsArray() ?? [])
+                .Select(x => x?.GetValue<string>() ?? "").ToList();
+            var games = (ver["game_versions"]?.AsArray() ?? [])
+                .Select(x => x?.GetValue<string>() ?? "").ToList();
+
+            // 递归依赖：只取 required 的
+            var depIds = new List<string>();
+            if (ver["dependencies"] is JsonArray deps)
+            {
+                foreach (var d in deps)
+                {
+                    if (d?["dependency_type"]?.GetValue<string>() != "required") continue;
+                    var pid = d?["project_id"]?.GetValue<string>();
+                    if (!string.IsNullOrWhiteSpace(pid)) depIds.Add(pid);
+                }
+            }
+
+            return new ModDownloadCandidate
+            {
+                Platform = "modrinth",
+                ProjectId = id,
+                VersionId = ver["id"]?.GetValue<string>() ?? "",
+                Name = title,
+                Version = ver["version_number"]?.GetValue<string>() ?? "",
+                FileName = fname,
+                DownloadUrl = dlUrl,
+                SizeBytes = file?["size"]?.GetValue<long>() ?? 0,
+                Sha1 = file?["hashes"]?["sha1"]?.GetValue<string>(),
+                Loaders = loaders,
+                GameVersions = games,
+                DependencyIds = depIds,
+            };
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 加载器名 → Modrinth 查询里该用的名字。
+    ///
+    /// NeoForge 兼容 Forge 生态的 Mod，Quilt 兼容 Fabric 的，所以要带上
+    /// 两个名字一起查。反过来不行 —— 给 Forge 实例装 NeoForge 专用包会崩。
+    /// </summary>
+    private static string[] LoaderQueryNames(string loaderLower) => loaderLower switch
+    {
+        "neoforge" => ["neoforge", "forge"],
+        "quilt" => ["quilt", "fabric"],
+        _ => [loaderLower],
+    };
+
+    private static bool LoaderMatches(string candidate, string wanted)
+    {
+        candidate = candidate.Trim().ToLowerInvariant();
+        if (candidate == wanted) return true;
+
+        // NeoForge 能从 Forge Mod 加载（1.20.1 生态），反之不行
+        if (wanted == "neoforge" && candidate == "forge") return true;
+
+        // quilt 兼容 fabric
+        if (wanted == "quilt" && candidate == "fabric") return true;
+
+        return false;
+    }
+
+    /// <summary>按 Modrinth project id 直接拿候选（用于递归依赖，id 比 slug 快且准）。</summary>
+    public async Task<ModDownloadCandidate?> FindModrinthByIdAsync(
+        string projectId, string mcVersion, string loader, CancellationToken ct = default)
+    {
+        var project = await GetModrinthProjectAsync(projectId, ct);
+        return project is null ? null : await PickModrinthVersionAsync(project, mcVersion, loader, ct);
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // Modrinth 搜索（给 GUI 的列表用）
+    // ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// 在 Modrinth 搜索 Mod，返回多条结果供用户挑选。
+    ///
+    /// 与 <see cref="FindModrinthAsync"/> 的区别：那个只取第一条且返回可下载候选，
+    /// 是给"自动补依赖"用的——依赖 id 是确定的，不需要挑。这里是给人用的，
+    /// 所以返回列表 + 图标 + 下载数 + 简介，让用户自己选。
+    ///
+    /// <paramref name="mcVersion"/> 和 <paramref name="loader"/> 会作为 facets 过滤，
+    /// 传空表示不限。
+    /// </summary>
+    public async Task<IReadOnlyList<ModSearchResult>> SearchModrinthListAsync(
+        string query,
+        string? mcVersion = null,
+        string? loader = null,
+        int limit = 20,
+        int offset = 0,
+        CancellationToken ct = default)
+    {
+        limit = Math.Clamp(limit, 1, 100);
+        offset = Math.Max(0, offset);
+
+        try
+        {
+            var facets = BuildModrinthFacets(mcVersion, loader);
+            var url = $"{ModrinthApi}/search?query={Uri.EscapeDataString(query ?? "")}" +
+                      $"&limit={limit}&offset={offset}&index=relevance" +
+                      (facets.Length > 0 ? $"&facets={facets}" : "");
+
+            using var resp = await GetWithFallbackAsync(url, ct);
+            if (!resp.IsSuccessStatusCode) return [];
+
+            var json = await resp.Content.ReadFromJsonAsync<JsonObject>(ct);
+            var hits = json?["hits"]?.AsArray();
+            if (hits is null || hits.Count == 0) return [];
+
+            var results = new List<ModSearchResult>();
+            foreach (var h in hits)
+            {
+                if (h is not JsonObject hit) continue;
+
+                var slug = hit["slug"]?.GetValue<string>() ?? "";
+                var projectId = hit["project_id"]?.GetValue<string>() ?? slug;
+                if (string.IsNullOrWhiteSpace(projectId)) continue;
+
+                results.Add(new ModSearchResult
+                {
+                    ProjectId = projectId,
+                    Slug = slug,
+                    Name = hit["title"]?.GetValue<string>() ?? slug,
+                    Summary = hit["description"]?.GetValue<string>() ?? "",
+                    IconUrl = hit["icon_url"]?.GetValue<string>(),
+                    Downloads = hit["downloads"]?.GetValue<long>() ?? 0,
+                    Follows = hit["follows"]?.GetValue<long>() ?? 0,
+                    Author = hit["author"]?.GetValue<string>() ?? "",
+                    Loaders = (hit["categories"]?.AsArray() ?? [])
+                        .Select(x => x?.GetValue<string>() ?? "")
+                        .Where(IsLoaderName).ToList(),
+                    GameVersions = (hit["versions"]?.AsArray() ?? [])
+                        .Select(x => x?.GetValue<string>() ?? "").ToList(),
+                    ProjectType = hit["project_type"]?.GetValue<string>() ?? "mod",
+                });
+            }
+
+            return results;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { return []; }
+    }
+
+    /// <summary>
+    /// 组装 Modrinth facets。
+    ///
+    /// 格式是 JSON 数组的数组，外层 AND、内层 OR —— 比如
+    /// `[["project_type:mod"],["categories:fabric"],["versions:1.20.1"]]`
+    /// 意思是"是 mod" 且 "属于 fabric 分类" 且 "支持 1.20.1"。
+    ///
+    /// 加载器要按 Modrinth 的分类名传（全小写）；"forge" 在 Modrinth 上
+    /// 同时覆盖 Forge 和 NeoForge 的旧包，所以 NeoForge 也传 forge 会漏掉
+    /// 纯 NeoForge 的包，这里两者都带上用 OR 连。
+    /// </summary>
+    private static string BuildModrinthFacets(string? mcVersion, string? loader)
+    {
+        var groups = new List<string> { "[\"project_type:mod\"]" };
+
+        var l = (loader ?? "").Trim().ToLowerInvariant();
+        if (l.Length > 0)
+        {
+            var names = l switch
+            {
+                "neoforge" => new[] { "neoforge", "forge" },
+                "quilt" => new[] { "quilt", "fabric" },
+                _ => new[] { l },
+            };
+            groups.Add("[" + string.Join(",", names.Select(n => $"\"categories:{n}\"")) + "]");
+        }
+
+        if (!string.IsNullOrWhiteSpace(mcVersion))
+            groups.Add($"[\"versions:{mcVersion.Trim()}\"]");
+
+        return Uri.EscapeDataString("[" + string.Join(",", groups) + "]");
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // CurseForge（需 key）
+    // ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// 在 CurseForge 搜索。未配置 API key 时返回空列表 —— 这是预期行为，
+    /// 调用方按"这个源不可用"处理即可，不要当成错误。
+    /// </summary>
+    public async Task<ModDownloadCandidate?> FindCurseForgeAsync(
+        string query, string? mcVersion, string loader, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(CurseForgeApiKey)) return null;
+        if (string.IsNullOrWhiteSpace(query)) return null;
+
+        try
+        {
+            // classId 6 = Mods
+            var gameVersion = Uri.EscapeDataString(mcVersion ?? "");
+            var url = $"{CurseForgeApi}/mods/search?gameId=432&classId=6" +
+                      $"&searchFilter={Uri.EscapeDataString(query)}&pageSize=5" +
+                      (string.IsNullOrWhiteSpace(mcVersion) ? "" : $"&gameVersion={gameVersion}");
+
+            using var resp = await GetWithFallbackAsync(url, ct);
+
+            // CurseForge 对不合法 key 返回 403 —— 静默降级
+            if (!resp.IsSuccessStatusCode) return null;
+
+            var json = await resp.Content.ReadFromJsonAsync<JsonObject>(ct);
+            var data = json?["data"]?.AsArray();
+            if (data is null || data.Count == 0) return null;
+
+            foreach (var m in data)
+            {
+                if (m is not JsonObject mod) continue;
+
+                var modId = mod["id"]?.GetValue<int>() ?? 0;
+                if (modId == 0) continue;
+                if (mod["allowModDistribution"]?.GetValue<bool>() == false) continue;  // 作者不允许分发
+
+                var candidate = await PickCurseForgeFileAsync(modId, mcVersion, loader, ct);
+                if (candidate is not null) return candidate;
+            }
+
+            return null;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { return null; }
+    }
+
+    private async Task<ModDownloadCandidate?> PickCurseForgeFileAsync(
+        int modId, string? mcVersion, string loader, CancellationToken ct)
+    {
+        try
+        {
+            var url = $"{CurseForgeApi}/mods/{modId}/files?pageSize=50";
+            using var resp = await GetWithFallbackAsync(url, ct);
+            if (!resp.IsSuccessStatusCode) return null;
+
+            var json = await resp.Content.ReadFromJsonAsync<JsonObject>(ct);
+            var files = json?["data"]?.AsArray();
+            if (files is null) return null;
+
+            var loaderLower = (loader ?? "").Trim().ToLowerInvariant();
+
+            foreach (var f in files)
+            {
+                if (f is not JsonObject file) continue;
+
+                var games = (file["gameVersions"]?.AsArray() ?? [])
+                    .Select(x => x?.GetValue<string>() ?? "").ToList();
+
+                if (!string.IsNullOrWhiteSpace(mcVersion) &&
+                    !games.Contains(mcVersion, StringComparer.OrdinalIgnoreCase))
+                    continue;
+
+                // CurseForge 把加载器也塞在 gameVersions 里
+                if (loaderLower.Length > 0 &&
+                    !games.Any(g => g.Equals(loaderLower, StringComparison.OrdinalIgnoreCase) ||
+                                    (loaderLower == "neoforge" && g.Equals("forge", StringComparison.OrdinalIgnoreCase))))
+                    continue;
+
+                var fileId = file["id"]?.GetValue<int>() ?? 0;
+                if (fileId == 0) continue;
+
+                var dl = file["downloadUrl"]?.GetValue<string>();
+
+                // 没有直链就无法下载（作者关闭了第三方分发）
+                if (string.IsNullOrWhiteSpace(dl)) continue;
+
+                var deps = new List<string>();
+                if (file["dependencies"] is JsonArray depArr)
+                {
+                    foreach (var d in depArr)
+                    {
+                        if (d?["relationType"]?.GetValue<int>() != 3) continue;  // 3 = RequiredDependency
+                        var did = d?["modId"]?.GetValue<int>() ?? 0;
+                        if (did != 0) deps.Add("cf:" + did);
+                    }
+                }
+
+                return new ModDownloadCandidate
+                {
+                    Platform = "curseforge",
+                    ProjectId = modId.ToString(),
+                    VersionId = fileId.ToString(),
+                    Name = file["displayName"]?.GetValue<string>() ?? modId.ToString(),
+                    Version = file["displayName"]?.GetValue<string>() ?? "",
+                    FileName = file["fileName"]?.GetValue<string>() ?? $"mod-{fileId}.jar",
+                    DownloadUrl = dl,
+                    SizeBytes = file["fileLength"]?.GetValue<long>() ?? 0,
+                    Loaders = games.Where(g => IsLoaderName(g)).ToList(),
+                    GameVersions = games.Where(g => !IsLoaderName(g)).ToList(),
+                    DependencyIds = deps,
+                };
+            }
+
+            return null;
+        }
+        catch { return null; }
+    }
+
+    private static bool IsLoaderName(string s)
+    {
+        s = s.ToLowerInvariant();
+        return s is "forge" or "fabric" or "neoforge" or "quilt" or "liteloader" or "rift";
+    }
+
+    // ────────────────────────────────────────────────────────────
+    // 下载
+    // ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// 单次"读不到任何字节"能容忍的最长时间。
+    ///
+    /// 为什么需要它：2026-10 实测 cdn.modrinth.com 会在握手早已完成（0.08s）之后，
+    /// 让响应体静止 45~65 秒才开始吐数据，同一个 URL 换一次连接就只要 1.3 秒。
+    /// 这种静默期只有 HttpClient.Timeout（5 分钟）能兜住，而 5 分钟对用户来说
+    /// 长得像死机。
+    ///
+    /// 所以这里设一个更短的静默阈值：只要超过它还没读到新字节，就认为这条连接
+    /// 卡住了，主动断开并让上层重试（重连通常会落到正常节点）。
+    /// 注意这**不是**总时长上限 —— 慢速持续传输不会被它打断，因为那种情况下
+    /// 每读一小块就会重置计时。
+    /// </summary>
+    private static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(25);
+
+    public async Task<bool> DownloadAsync(
+        ModDownloadCandidate candidate,
+        string targetPath,
+        IProgress<DownloadProgress>? progress = null,
+        CancellationToken ct = default)
+    {
+        var partPath = targetPath + ".part";
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+
+            using var resp = await GetWithFallbackAsync(
+                candidate.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+
+            if (!resp.IsSuccessStatusCode) return false;
+
+            var total = resp.Content.Headers.ContentLength ?? candidate.SizeBytes;
+
+            await using (var src = await resp.Content.ReadAsStreamAsync(ct))
+            await using (var dst = new FileStream(partPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true))
+            {
+                var buffer = new byte[81920];
+                long read = 0;
+                int n;
+                var lastReport = 0L;
+
+                while (true)
+                {
+                    // 每一次读都挂一个静默上限：CDN 边缘会在传输中途静止几十秒，
+                    // 靠 HttpClient.Timeout（5 分钟）兜的话用户会以为程序死了。
+                    // 这里只限制"连续多久读不到新字节"，持续但缓慢的传输不受影响。
+                    using var stall = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    stall.CancelAfter(StallTimeout);
+
+                    try
+                    {
+                        n = await src.ReadAsync(buffer, stall.Token);
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        // 用户没取消，是我们主动掐的静默连接 —— 当作失败上报，
+                        // 让上层重新发起（重连通常就快了）。
+                        TryDelete(partPath);
+                        return false;
+                    }
+
+                    if (n <= 0) break;
+
+                    await dst.WriteAsync(buffer.AsMemory(0, n), ct);
+                    read += n;
+
+                    // 每 128KB 报一次，避免 UI 线程被高频回调淹没
+                    if (read - lastReport >= 131072 || read == total)
+                    {
+                        lastReport = read;
+                        progress?.Report(new DownloadProgress(candidate.Name, read, total));
+                    }
+                }
+            }
+
+            // 有声明 sha1 就校验 —— 下到损坏的包比下不到更糟（启动时才崩）
+            if (!string.IsNullOrWhiteSpace(candidate.Sha1))
+            {
+                var actual = await Sha1Async(partPath, ct);
+                if (!actual.Equals(candidate.Sha1, StringComparison.OrdinalIgnoreCase))
+                {
+                    TryDelete(partPath);
+                    return false;
+                }
+            }
+
+            File.Move(partPath, targetPath, overwrite: true);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            TryDelete(partPath);
+            throw;
+        }
+        catch
+        {
+            TryDelete(partPath);
+            return false;
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch { }
+    }
+
+    private static async Task<string> Sha1Async(string path, CancellationToken ct)
+    {
+        using var sha = System.Security.Cryptography.SHA1.Create();
+        await using var fs = File.OpenRead(path);
+        var hash = await sha.ComputeHashAsync(fs, ct);
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    public void Dispose()
+    {
+        _http.Dispose();
+        if (_fallback.IsValueCreated) _fallback.Value.Dispose();
+        _handler.Dispose();
+    }
+}
+
+/// <summary>下载进度。</summary>
+public sealed record DownloadProgress(string Name, long Downloaded, long Total)
+{
+    public double Fraction => Total > 0 ? Math.Clamp((double)Downloaded / Total, 0, 1) : 0;
+    public string Text => Total > 0
+        ? $"{Name}  {Downloaded / 1048576.0:F1}/{Total / 1048576.0:F1} MB ({Fraction * 100:F0}%)"
+        : $"{Name}  {Downloaded / 1048576.0:F1} MB";
+}
+
+/// <summary>
+/// 一条 Modrinth 搜索结果 —— 待用户挑选的项目摘要。
+///
+/// 注意这**不是**可下载候选：搜索接口只给项目级信息（名字、图标、下载数），
+/// 不含具体版本和文件。用户点了某一项之后，才按该项目的 id 去
+/// <see cref="ModDownloader.FindModrinthByIdAsync"/> 拿当前实例匹配的版本。
+/// 这样搜索结果不会因为实例换了 MC 版本就失效。
+/// </summary>
+public sealed record ModSearchResult
+{
+    /// <summary>Modrinth project id（形如 AANobbMIt8HNwPtj）。</summary>
+    public required string ProjectId { get; init; }
+
+    /// <summary>URL 里用的 slug，比如 sodium。</summary>
+    public required string Slug { get; init; }
+
+    public required string Name { get; init; }
+
+    /// <summary>一句话简介。</summary>
+    public string Summary { get; init; } = "";
+
+    public string? IconUrl { get; init; }
+
+    public long Downloads { get; init; }
+
+    public long Follows { get; init; }
+
+    public string Author { get; init; } = "";
+
+    /// <summary>从 categories 里挑出来的加载器名。</summary>
+    public IReadOnlyList<string> Loaders { get; init; } = [];
+
+    /// <summary>支持的 MC 版本。</summary>
+    public IReadOnlyList<string> GameVersions { get; init; } = [];
+
+    public string ProjectType { get; init; } = "mod";
+
+    /// <summary>下载数显示成 1.2M / 34.5K 这种，比 1234567 好读。</summary>
+    public string DownloadsText => Downloads switch
+    {
+        >= 100_000_000 => $"{Downloads / 100_000_000.0:F0}亿",
+        >= 10_000 => $"{Downloads / 10_000.0:F1}万",
+        _ => Downloads.ToString(),
+    };
+
+    /// <summary>加载器标签，给 UI 直接绑。</summary>
+    public string LoadersText => Loaders.Count > 0 ? string.Join(" / ", Loaders) : "—";
+}

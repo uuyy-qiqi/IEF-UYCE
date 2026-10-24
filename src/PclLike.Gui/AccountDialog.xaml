@@ -1,0 +1,96 @@
+<Window x:Class="PclLike.Gui.AccountDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="账号" Width="460" SizeToContent="Height"
+        Icon="Assets/pclike.png"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Background="{StaticResource BgBrush}" FontFamily="Microsoft YaHei UI">
+  <Grid Margin="22">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+
+    <TextBlock Grid.Row="0" Text="账号" FontSize="17" FontWeight="Bold"
+               Foreground="{StaticResource FgBrush}"/>
+
+    <!-- ═══ 未登录 · 选择登录方式 ═══ -->
+    <StackPanel Grid.Row="1" x:Name="LoginPanel" Margin="0,18,0,0">
+      <TextBlock Text="用 Microsoft 账号登录即可使用正版，可以进正版服务器、用正版皮肤。"
+                 FontSize="12" TextWrapping="Wrap"
+                 Foreground="{StaticResource MutedBrush}" Margin="0,0,0,14"/>
+
+      <Button x:Name="MsLoginButton" Content="使用 Microsoft 账号登录" Height="38"
+              Style="{StaticResource FlatButton}" Click="MsLogin_Click"/>
+
+      <TextBlock Text="不想登录也可以，离线模式下填个名字就能玩单机。"
+                 FontSize="11" TextWrapping="Wrap"
+                 Foreground="{StaticResource MutedBrush}" Margin="0,12,0,0"/>
+      <TextBlock Text="离线模式："
+                 FontSize="12" Foreground="{StaticResource MutedBrush}" Margin="0,14,0,5"/>
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <TextBox x:Name="OfflineNameBox" Height="32" VerticalContentAlignment="Center"
+                 FontSize="13"/>
+        <Button Grid.Column="1" Content="用这个名字" Style="{StaticResource FlatButton}"
+                Margin="8,0,0,0" Click="Offline_Click"/>
+      </Grid>
+    </StackPanel>
+
+    <!-- ═══ 登录中 · device code ═══ -->
+    <StackPanel Grid.Row="2" x:Name="DevicePanel" Margin="0,18,0,0" Visibility="Collapsed">
+      <TextBlock Text="请在浏览器中完成登录" FontSize="14" FontWeight="SemiBold"
+                 Foreground="{StaticResource FgBrush}"/>
+
+      <Border Background="{StaticResource SurfaceHiBrush}" CornerRadius="6"
+              Padding="16,12" Margin="0,12,0,0">
+        <StackPanel>
+          <TextBlock Text="你的验证码" FontSize="11"
+                     Foreground="{StaticResource MutedBrush}"/>
+          <TextBlock x:Name="UserCodeText" Text="--------" FontSize="28" FontWeight="Bold"
+                     Foreground="{StaticResource AccentHiBrush}"
+                     FontFamily="Consolas" Margin="0,4,0,0"/>
+        </StackPanel>
+      </Border>
+
+      <Button x:Name="OpenBrowserButton" Content="打开浏览器并复制验证码" Height="34"
+              Style="{StaticResource FlatButton}" Margin="0,12,0,0" Click="OpenBrowser_Click"/>
+
+      <TextBlock x:Name="DeviceStatus" Text="等待中…" FontSize="12" TextWrapping="Wrap"
+                 Foreground="{StaticResource MutedBrush}" Margin="0,12,0,0"/>
+
+      <ProgressBar x:Name="DeviceProgress" Height="3" IsIndeterminate="True"
+                   Background="Transparent" BorderThickness="0" Margin="0,10,0,0"/>
+    </StackPanel>
+
+    <!-- ═══ 已登录 · 档案 ═══ -->
+    <StackPanel Grid.Row="3" x:Name="ProfilePanel" Margin="0,18,0,0" Visibility="Collapsed">
+      <StackPanel Orientation="Horizontal">
+        <Border Width="44" Height="44" CornerRadius="22"
+                Background="{StaticResource SurfaceHiBrush}">
+          <TextBlock x:Name="ProfileInitial" Text="?" FontSize="20" FontWeight="Bold"
+                     Foreground="{StaticResource AccentHiBrush}"
+                     HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Border>
+        <StackPanel Margin="14,0,0,0" VerticalAlignment="Center">
+          <TextBlock x:Name="ProfileName" Text="" FontSize="18" FontWeight="Bold"
+                     Foreground="{StaticResource FgBrush}"/>
+          <TextBlock x:Name="ProfileKind" Text="正版账号" FontSize="11"
+                     Foreground="{StaticResource MutedBrush}"/>
+        </StackPanel>
+      </StackPanel>
+
+      <TextBlock x:Name="ProfileUuid" Text="" FontSize="10.5" Margin="0,12,0,0"
+                 Foreground="{StaticResource MutedBrush}" FontFamily="Consolas"
+                 TextWrapping="Wrap"/>
+
+      <Button Content="退出登录" Style="{StaticResource FlatButton}"
+              Margin="0,16,0,0" HorizontalAlignment="Left" Click="Logout_Click"/>
+    </StackPanel>
+  </Grid>
+</Window>

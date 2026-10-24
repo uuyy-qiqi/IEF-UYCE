@@ -1,0 +1,41 @@
+6|        Title="PclLike 启动器" Height="720" Width="1120"
+27|         顶栏：蓝色底 + 居中四个大页签 + 右侧账号/窗口按钮
+48|        <!-- 中：四个主页签（居中） -->
+96|          <!-- 最小化 / 关闭（自绘，配合无边框顶栏的观感） -->
+135|         主体：左侧导航 + 右侧内容
+144|           下载/设置/工具页是分组导航；启动页换成人卡。PCL 的启动页左栏放的是头像 + 昵称 + 启动按钮，导航在这页让位给玩家信息。 -->
+152|              <!-- 内容随当前大页签变化，由代码切换 -->
+167|            <!-- 头像 + 昵称 + 验证状态。整块可点：点一下进账号面板。 -->
+186|                <!-- 3D 皮肤头像。正版/离线都尽量查真实皮肤，查不到就内置 Steve。 -->
+206|            <!-- 底部：启动按钮 + 两个实例按钮 -->
+226|      <!-- ── 右：内容区 ── -->
+334|        <!-- ════ 下载页 ════ -->
+338|            <!-- 最新版本 -->
+341|                <TextBlock Text="最新版本" FontSize="14" FontWeight="SemiBold"
+393|                    <!-- 行高写死。徽章是两行文字旁边的小方块，如果让内容自己撑高度，徽章会被裁掉下面一半；给个固定高度让徽章垂直居中就稳了。 -->
+408|                        <!-- 不设 LineHeight：中文字体（微软雅黑）的行高比字号大不少，强行压成小值会把字的下半截裁掉。 -->
+428|                <TextBlock Grid.Column="0" Text="筛选版本" FontSize="12.5"
+444|        <!-- ════ 设置页 ════ -->
+462|                    <ComboBoxItem Content="隔离所有实例"/>
+463|                    <ComboBoxItem Content="不隔离"/>
+482|                  <TextBlock Grid.Column="0" Text="自定义信息" FontSize="13"
+492|                  <TextBlock Grid.Column="0" Text="启动器可见性" FontSize="13"
+505|                  <TextBlock Grid.Column="0" Text="进程优先级" FontSize="13"
+508|                    <ComboBoxItem Content="高（优先保证游戏运行，游戏性能更佳，但可能造成其他程序卡顿）"/>
+509|                    <ComboBoxItem Content="普通"/>
+510|                    <ComboBoxItem Content="低"/>
+536|                    <ComboBoxItem Content="设备代码流"/>
+537|                    <ComboBoxItem Content="浏览器跳转"/>
+549|                <RadioButton Content="自动配置 / 自定义" GroupName="Mem" IsChecked="True"
+553|                <!-- 内存滑杆。这里不再额外画一条内存条 —— 滑杆轨道本身就表示区间，
+554|                     下面再叠一条填充会让人以为是两个不同的设置。 -->
+601|            <Button Content="实例独立设置" Style="{StaticResource PrimaryButton}"
+607|        <!-- ════ 工具页 ════ -->
+613|              <TextBlock Text="[提示] 联机服务对您的网络质量要求较高，如遇连接不上可尝试更换房间。"/>
+622|                <TextBlock Text="1、在下方输入朋友发送给你的大厅编号，单击【加入】。"/>
+624|                <TextBlock Text="2、启动游戏，选择【多人游戏】，在局域网游戏中加入大厅。"/>
+648|                <TextBlock Text="1、进入世界后，在游戏菜单中选择【对局域网开放】。"/>
+650|                <TextBlock Text="2、在下方选择此游戏实例，单击【创建】。"/>
+675|                  <TextBlock Text="给当前实例装 Mod、查依赖、搜索下载。"/>
+699|        <!-- 进度条 -->
+706|        <!-- 日志抽屉 -->

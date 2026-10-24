@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>probe-nf</AssemblyName>
+    <!-- 入口选择器：ProbeMain 指定用哪个 .cs 作为唯一入口，默认 Main(Program.cs)。
+         -p:ProbeMain=Launch    → Launch.cs（真实启动实测）
+         -p:ProbeMain=JavaProbe → JavaProbe.cs（Java 发现与选择）
+         注意：不能用 StartupObject —— 顶级语句与 /main 互斥（CS8804），
+         只能用 Compile Remove 把其它入口文件排掉。
+         MSBuild 不允许在 Compile Remove 条件里用自定义元数据，
+         所以这里逐个文件写条件。新增入口时照抄一行即可。 -->
+    <ProbeMain Condition="'$(ProbeMain)' == ''">Main</ProbeMain>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="Program.cs"   Condition="'$(ProbeMain)' != 'Main'" />
+    <Compile Remove="Launch.cs"    Condition="'$(ProbeMain)' != 'Launch'" />
+    <Compile Remove="JavaProbe.cs" Condition="'$(ProbeMain)' != 'JavaProbe'" />
+    <Compile Remove="JavaRuntimeProbe.cs" Condition="'$(ProbeMain)' != 'JavaRuntimeProbe'" />
+    <Compile Remove="LoginProbe.cs" Condition="'$(ProbeMain)' != 'LoginProbe'" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\src\PclLike.Core\PclLike.Core.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,17 @@
+# ── 构建产物 ──
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# ── 运行期与临时文件 ──
+.cache/
+*.damaged
+*.restored.xaml
+
+# ── 截图探针的输出（随时能用 --shoot 重出，不进仓库）──
+tools/shots/
+
+# ── 一次性修复脚本的中间报告 ──
+tools/report_*.txt

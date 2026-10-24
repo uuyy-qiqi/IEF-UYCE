@@ -1,0 +1,19 @@
+<Application x:Class="PclLike.Gui.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:PclLike.Gui"
+             StartupUri="MainWindow.xaml">
+  <Application.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.MergedDictionaries>
+        <!-- 全部视觉定义集中在这个文件里：配色、字体、卡片、导航、按钮 -->
+        <ResourceDictionary Source="Theme.Pcl.xaml"/>
+      </ResourceDictionary.MergedDictionaries>
+
+      <!-- 转换器 -->
+      <local:InverseBoolConverter     x:Key="InvBool"/>
+      <local:BoolToVisibilityConverter x:Key="BoolVis"/>
+      <local:VersionTypeConverter     x:Key="VerType"/>
+    </ResourceDictionary>
+  </Application.Resources>
+</Application>

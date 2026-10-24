@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>PclLike.Gui</RootNamespace>
+    <AssemblyName>PclLike</AssemblyName>
+    <StartupObject>PclLike.Gui.Program</StartupObject>
+    <Version>0.1.0</Version>
+    <Platforms>AnyCPU;x64</Platforms>
+    <!-- exe 内嵌图标：任务栏、开始菜单、资源管理器里显示的都是它 -->
+    <ApplicationIcon>Assets\pclike.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PclLike.Core\PclLike.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 打进程序集的资源：窗口图标用的 png，以及查不到皮肤时的默认 Steve 头像。
+         用 pack URI 在 XAML / 代码里引用。 -->
+    <Resource Include="Assets\pclike.png" />
+    <Resource Include="Assets\default_skin.png" />
+
+    <!-- 生成脚本和预览图不进程序集，免得白塞一堆没用的图 -->
+    <None Remove="Assets\_preview_*.png" />
+    <None Remove="Assets\make_icon.py" />
+    <Resource Remove="Assets\_preview_*.png" />
+    <Resource Remove="Assets\pclike.ico" />
+  </ItemGroup>
+
+</Project>

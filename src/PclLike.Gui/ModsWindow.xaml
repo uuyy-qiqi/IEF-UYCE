@@ -1,0 +1,429 @@
+<Window x:Class="PclLike.Gui.ModsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:PclLike.Gui"
+        Title="Mod 管理" Height="680" Width="1000"
+        Icon="Assets/pclike.png"
+        MinHeight="480" MinWidth="760"
+        Background="{StaticResource BgBrush}"
+        WindowStartupLocation="CenterOwner"
+        UseLayoutRounding="True" SnapsToDevicePixels="True">
+
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+
+    <!-- ═══ 顶部：实例信息 + 操作按钮 ═══ -->
+    <Border Grid.Row="0" Background="{StaticResource SurfaceBrush}"
+            BorderBrush="{StaticResource BorderBrush2}" BorderThickness="0,0,0,1"
+            Padding="16,12">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+
+        <StackPanel Grid.Column="0">
+          <TextBlock x:Name="InstanceLabel" FontSize="16" FontWeight="Bold"
+                     Foreground="{StaticResource FgBrush}"/>
+          <TextBlock x:Name="ContextLabel" FontSize="11.5"
+                     Foreground="{StaticResource MutedBrush}" Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+          <Button Content="打开目录" Style="{StaticResource FlatButton}"
+                  Click="OpenFolder_Click" Margin="0,0,8,0"/>
+          <Button Content="刷新" Style="{StaticResource FlatButton}"
+                  Click="Refresh_Click"/>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <!-- ═══ 主体：已安装 / 搜索下载 ═══ -->
+    <TabControl Grid.Row="1" x:Name="MainTabs" Margin="16,12,16,0"
+                Background="Transparent" BorderThickness="0">
+
+      <!-- ─────────────────── 页 1：已安装 ─────────────────── -->
+      <TabItem Header="已安装">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+          </Grid.RowDefinitions>
+
+          <!-- 工具栏 -->
+          <Border Grid.Row="0" Padding="0,10"
+                  BorderBrush="{StaticResource BorderBrush2}" BorderThickness="0,0,0,1">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+
+              <TextBox Grid.Column="0" x:Name="FilterBox"
+                       TextChanged="Filter_Changed"
+                       ToolTip="按名称 / id / 文件名筛选"
+                       Margin="0,0,10,0"/>
+
+              <Button Grid.Column="1" Content="全选" Style="{StaticResource FlatButton}"
+                      Padding="10,5" Click="SelectAll_Click" Margin="0,0,6,0"/>
+              <Button Grid.Column="2" x:Name="ToggleAllButton" Content="全部禁用"
+                      Style="{StaticResource FlatButton}" Padding="10,5"
+                      Click="ToggleAll_Click" Margin="0,0,6,0"/>
+              <Button Grid.Column="3" x:Name="DeleteButton" Content="删除选中"
+                      Style="{StaticResource FlatButton}" Padding="10,5"
+                      Click="Delete_Click" Margin="0,0,10,0"/>
+              <Button Grid.Column="4" x:Name="CheckButton" Content="检查依赖"
+                      Style="{StaticResource FlatButton}" Padding="10,5"
+                      Click="Check_Click"/>
+            </Grid>
+          </Border>
+
+          <Grid Grid.Row="1" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="8"/>
+              <ColumnDefinition Width="300" MinWidth="200"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Background="{StaticResource SurfaceBrush}"
+                    BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1" CornerRadius="6">
+              <ListBox x:Name="ModList" ItemsSource="{Binding FilteredMods}"
+                       SelectionMode="Extended"
+                       SelectionChanged="ModList_SelectionChanged"
+                       Background="Transparent" BorderThickness="0"
+                       ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                       VirtualizingPanel.IsVirtualizing="True"
+                       VirtualizingPanel.VirtualizationMode="Recycling"
+                       Margin="6">
+                <ListBox.ItemContainerStyle>
+                  <Style TargetType="ListBoxItem">
+                    <Setter Property="Padding" Value="0"/>
+                    <Setter Property="Margin" Value="0,1"/>
+                    <Setter Property="Template">
+                      <Setter.Value>
+                        <ControlTemplate TargetType="ListBoxItem">
+                          <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                  CornerRadius="4" Padding="0">
+                            <ContentPresenter/>
+                          </Border>
+                          <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                              <Setter TargetName="Bd" Property="Background" Value="#14FFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                              <Setter TargetName="Bd" Property="Background" Value="#26A06CD5"/>
+                            </Trigger>
+                          </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                      </Setter.Value>
+                    </Setter>
+                  </Style>
+                </ListBox.ItemContainerStyle>
+
+                <ListBox.ItemTemplate>
+                  <DataTemplate DataType="{x:Type local:ModRow}">
+                    <Grid Margin="8,7">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                      </Grid.ColumnDefinitions>
+
+                      <!-- 启用开关 -->
+                      <CheckBox Grid.Column="0" IsChecked="{Binding Enabled, Mode=OneWay}"
+                                Click="ModToggle_Click" VerticalAlignment="Center"
+                                Margin="0,0,10,0" Tag="{Binding}"/>
+
+                      <!-- 名称 + 元数据 -->
+                      <StackPanel Grid.Column="1">
+                        <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="SemiBold"
+                                   Foreground="{Binding TitleBrush}"
+                                   TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Text="{Binding Subtitle}" FontSize="11"
+                                   Foreground="{StaticResource MutedBrush}"
+                                   Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/>
+                      </StackPanel>
+
+                      <!-- 状态徽标 -->
+                      <Border Grid.Column="2" CornerRadius="3" Padding="6,2"
+                              Background="{Binding BadgeBrush}" VerticalAlignment="Center"
+                              Margin="8,0">
+                        <TextBlock Text="{Binding Badge}" FontSize="10.5"
+                                   Foreground="{StaticResource FgBrush}"/>
+                      </Border>
+
+                      <TextBlock Grid.Column="3" Text="{Binding SizeText}" FontSize="11"
+                                 Foreground="{StaticResource MutedBrush}"
+                                 VerticalAlignment="Center" MinWidth="58"
+                                 TextAlignment="Right"/>
+                    </Grid>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </Border>
+
+            <GridSplitter Grid.Column="1" Width="8" HorizontalAlignment="Stretch"
+                          Background="Transparent" ResizeBehavior="PreviousAndNext"/>
+
+            <!-- 右：依赖问题面板 -->
+            <Border Grid.Column="2" Background="{StaticResource SurfaceBrush}"
+                    BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1" CornerRadius="6">
+              <Grid>
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="*"/>
+                  <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Text="依赖检查" FontSize="13" FontWeight="SemiBold"
+                           Foreground="{StaticResource FgBrush}" Margin="14,12,14,8"/>
+
+                <ListBox Grid.Row="1" x:Name="IssueList" ItemsSource="{Binding Issues}"
+                         Background="Transparent" BorderThickness="0"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         Margin="6,0,6,0">
+                  <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                      <Setter Property="Padding" Value="0"/>
+                      <Setter Property="Template">
+                        <Setter.Value>
+                          <ControlTemplate TargetType="ListBoxItem">
+                            <ContentPresenter/>
+                          </ControlTemplate>
+                        </Setter.Value>
+                      </Setter>
+                    </Style>
+                  </ListBox.ItemContainerStyle>
+                  <ListBox.ItemTemplate>
+                    <DataTemplate DataType="{x:Type local:IssueRow}">
+                      <Border Background="{StaticResource SurfaceHiBrush}" CornerRadius="4"
+                              Padding="9,7" Margin="0,0,0,5">
+                        <StackPanel>
+                          <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="{Binding LevelLabel}" FontSize="10.5"
+                                       FontWeight="Bold" Foreground="{Binding LevelBrush}"
+                                       VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding SourceName}" FontSize="11.5"
+                                       Foreground="{StaticResource FgBrush}" Margin="7,0,0,0"
+                                       TextTrimming="CharacterEllipsis"/>
+                          </StackPanel>
+                          <TextBlock Text="{Binding Message}" FontSize="11"
+                                     Foreground="{StaticResource MutedBrush}"
+                                     TextWrapping="Wrap" Margin="0,4,0,0"/>
+                        </StackPanel>
+                      </Border>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+
+                <Button Grid.Row="2" x:Name="AutoFixButton" Content="自动补齐缺失依赖"
+                        Style="{StaticResource PrimaryButton}" Margin="12,8,12,12"
+                        Click="AutoFix_Click"/>
+              </Grid>
+            </Border>
+          </Grid>
+        </Grid>
+      </TabItem>
+
+      <!-- ─────────────────── 页 2：搜索下载 ─────────────────── -->
+      <TabItem Header="搜索下载">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+
+          <!-- 搜索栏 -->
+          <Border Grid.Row="0" Padding="0,10"
+                  BorderBrush="{StaticResource BorderBrush2}" BorderThickness="0,0,0,1">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+
+              <TextBox Grid.Column="0" x:Name="SearchBox"
+                       Text="{Binding SearchQuery, UpdateSourceTrigger=PropertyChanged}"
+                       KeyDown="SearchBox_KeyDown"
+                       ToolTip="Mod 名称 / 关键词（可留空，直接按版本浏览热门）"
+                       Margin="0,0,8,0"/>
+
+              <TextBlock Grid.Column="1" Text="MC" FontSize="11.5"
+                         Foreground="{StaticResource MutedBrush}"
+                         VerticalAlignment="Center" Margin="0,0,6,0"/>
+              <TextBox Grid.Column="2" x:Name="SearchMcBox" Width="90"
+                       Text="{Binding SearchMcVersion, UpdateSourceTrigger=PropertyChanged}"
+                       ToolTip="按 MC 版本过滤，留空不限" Margin="0,0,10,0"/>
+
+              <ComboBox Grid.Column="3" x:Name="SearchLoaderBox" Width="110"
+                        ItemsSource="{Binding SearchLoaderOptions}"
+                        SelectedItem="{Binding SearchLoader, Mode=TwoWay}"
+                        ToolTip="按加载器过滤" Margin="0,0,10,0"/>
+
+              <Button Grid.Column="4" x:Name="SearchButton"
+                      Content="{Binding SearchButtonText}"
+                      IsEnabled="{Binding CanSearch}"
+                      Style="{StaticResource FlatButton}" Padding="16,5"
+                      Click="Search_Click"/>
+            </Grid>
+          </Border>
+
+          <!-- 结果列表 -->
+          <Border Grid.Row="1" Background="{StaticResource SurfaceBrush}"
+                  BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1"
+                  CornerRadius="6" Margin="0,12,0,0">
+            <Grid>
+              <ListBox x:Name="SearchList" ItemsSource="{Binding SearchResults}"
+                       Background="Transparent" BorderThickness="0"
+                       ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                       VirtualizingPanel.IsVirtualizing="True"
+                       VirtualizingPanel.VirtualizationMode="Recycling"
+                       MouseDoubleClick="SearchList_DoubleClick"
+                       Margin="6">
+                <ListBox.ItemContainerStyle>
+                  <Style TargetType="ListBoxItem">
+                    <Setter Property="Padding" Value="0"/>
+                    <Setter Property="Margin" Value="0,1"/>
+                    <Setter Property="Template">
+                      <Setter.Value>
+                        <ControlTemplate TargetType="ListBoxItem">
+                          <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                  CornerRadius="4" Padding="0">
+                            <ContentPresenter/>
+                          </Border>
+                          <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                              <Setter TargetName="Bd" Property="Background" Value="#14FFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                              <Setter TargetName="Bd" Property="Background" Value="#26A06CD5"/>
+                            </Trigger>
+                          </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                      </Setter.Value>
+                    </Setter>
+                  </Style>
+                </ListBox.ItemContainerStyle>
+
+                <ListBox.ItemTemplate>
+                  <DataTemplate DataType="{x:Type local:ModSearchRow}">
+                    <Grid Margin="8,7">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                      </Grid.ColumnDefinitions>
+
+                      <!-- 图标 -->
+                      <Border Grid.Column="0" Width="40" Height="40" CornerRadius="4"
+                              Background="{Binding FallbackBrush}"
+                              VerticalAlignment="Top" Margin="0,0,10,0">
+                        <Image Source="{Binding IconUrl}" Stretch="UniformToFill"/>
+                      </Border>
+
+                      <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold"
+                                   Foreground="{StaticResource FgBrush}"
+                                   TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Text="{Binding Subtitle}" FontSize="11"
+                                   Foreground="{StaticResource MutedBrush}"
+                                   Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Text="{Binding Summary}" FontSize="11"
+                                   Foreground="{StaticResource MutedBrush}"
+                                   Margin="0,3,0,0" TextTrimming="CharacterEllipsis"
+                                   ToolTip="{Binding Summary}"/>
+                      </StackPanel>
+
+                      <Button Grid.Column="2" Content="{Binding InstallLabel}"
+                              IsEnabled="{Binding CanInstall}"
+                              Foreground="{Binding InstallBrush}"
+                              Style="{StaticResource FlatButton}" Padding="14,5"
+                              VerticalAlignment="Center" Margin="10,0,0,0"
+                              Click="SearchInstall_Click" Tag="{Binding}"/>
+                    </Grid>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+
+              <!-- 空状态提示 -->
+              <TextBlock Text="输入关键词后回车搜索，或直接留空按当前版本浏览热门 Mod"
+                         FontSize="12" Foreground="{StaticResource MutedBrush}"
+                         HorizontalAlignment="Center" VerticalAlignment="Center"
+                         TextWrapping="Wrap" TextAlignment="Center" MaxWidth="360"
+                         IsHitTestVisible="False">
+                <TextBlock.Style>
+                  <Style TargetType="TextBlock">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Style.Triggers>
+                      <DataTrigger Binding="{Binding SearchResults.Count}" Value="0">
+                        <Setter Property="Visibility" Value="Visible"/>
+                      </DataTrigger>
+                    </Style.Triggers>
+                  </Style>
+                </TextBlock.Style>
+              </TextBlock>
+            </Grid>
+          </Border>
+        </Grid>
+      </TabItem>
+    </TabControl>
+
+    <!-- ═══ 安装区（本地文件）—— 只在「已安装」页显示 ═══ -->
+    <Border Grid.Row="2" x:Name="LocalInstallPanel" Padding="16,12,16,0">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+
+        <TextBlock Grid.Column="0" Text="安装本地" FontSize="12.5"
+                   Foreground="{StaticResource MutedBrush}"
+                   VerticalAlignment="Center" Margin="0,0,10,0"/>
+
+        <TextBox Grid.Column="1" x:Name="InstallPathBox"
+                 ToolTip="选择本地 .jar 文件，或粘贴文件/文件夹路径（也可以直接拖进窗口）"
+                 Margin="0,0,8,0"/>
+
+        <Button Grid.Column="2" Content="浏览…" Style="{StaticResource FlatButton}"
+                Padding="12,5" Click="Browse_Click" Margin="0,0,8,0"/>
+
+        <Button Grid.Column="3" x:Name="InstallButton" Content="安装"
+                Style="{StaticResource FlatButton}" Padding="16,5"
+                Click="Install_Click"/>
+      </Grid>
+    </Border>
+
+    <!-- ═══ 进度 ═══ -->
+    <Grid Grid.Row="3" Margin="16,10,16,0" Height="18">
+      <ProgressBar Style="{StaticResource ThinProgress}"
+                   Value="{Binding ProgressValue, Mode=OneWay}"
+                   Maximum="{Binding ProgressMax, Mode=OneWay}"
+                   IsIndeterminate="{Binding IsProgressIndeterminate, Mode=OneWay}"/>
+    </Grid>
+
+    <!-- ═══ 状态栏 ═══ -->
+    <Border Grid.Row="4" Background="{StaticResource SurfaceBrush}"
+            BorderBrush="{StaticResource BorderBrush2}" BorderThickness="0,1,0,0"
+            Padding="16,8" Margin="0,10,0,0">
+      <TextBlock Text="{Binding StatusText}" FontSize="11.5"
+                 Foreground="{StaticResource MutedBrush}"
+                 TextTrimming="CharacterEllipsis"/>
+    </Border>
+  </Grid>
+</Window>
