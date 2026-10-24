@@ -249,12 +249,41 @@ public sealed class LoaderInstaller : IDisposable
 
         foreach (var lib in libs.EnumerateArray())
         {
-            if (!lib.TryGetProperty("downloads", out var dl)) continue;
-            if (!dl.TryGetProperty("artifact", out var art)) continue;
+            string? path = null;
+            string? url = null;
 
-            var path = art.TryGetProperty("path", out var p) ? p.GetString() : null;
-            var url = art.TryGetProperty("url", out var u) ? u.GetString() : null;
-            if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(url)) continue;
+            if (lib.TryGetProperty("downloads", out var dl) &&
+                dl.TryGetProperty("artifact", out var art))
+            {
+                path = art.TryGetProperty("path", out var p) ? p.GetString() : null;
+                url = art.TryGetProperty("url", out var u) ? u.GetString() : null;
+            }
+
+            // ★ Fabric 的版本 JSON 用的是"maven 坐标 + 仓库根"的老格式：
+            //   libraries 里只有 `name` 和 `url`，**没有 downloads.artifact**。
+            //
+            //   原样 `continue` 掉的话，fabric-loader / sponge-mixin / intermediary
+            //   这些 jar 一个都不会下来。后果是启动时抛
+            //   `ClassNotFoundException: net.fabricmc.loader.impl.launch.knot.KnotClient`
+            //   （mainClass 就在 fabric-loader jar 里）。
+            //
+            //   这个坑以前被掩盖着：启动链路里的 ClasspathBuilder 会在缺文件时
+            //   自己按 maven 规则补下，所以"装完立刻启动"看不出问题；
+            //   一旦跳过启动期补文件（SkipInstall，或者实例启动时只想快点进游戏），
+            //   就立刻炸。加载器该在装的时候就装完整。
+            if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(url))
+            {
+                var name = lib.TryGetProperty("name", out var n) ? n.GetString() : null;
+
+                var repoRoot = lib.TryGetProperty("url", out var lu) ? lu.GetString() : null;
+
+                if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(repoRoot))
+                    continue;
+
+                var rel = ProcessorChain.MavenRelPath(name);
+                path = rel;
+                url = repoRoot.TrimEnd('/') + "/" + rel;
+            }
 
             var dest = Path.Combine(libsRoot, path.Replace('/', Path.DirectorySeparatorChar));
             if (File.Exists(dest)) continue;

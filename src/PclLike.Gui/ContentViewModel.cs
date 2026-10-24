@@ -49,6 +49,7 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
     private readonly ModDownloader _downloader = new();
     private readonly FavoritesStore _favorites;
     private readonly string _tempDir;
+    private readonly string _launcherRoot;
     private readonly CancellationTokenSource _cts = new();
 
     /// <summary>收藏夹存在启动器根目录下 —— 它是全启动器一份，不跟着实例走。</summary>
@@ -57,6 +58,7 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
         _instance = instance;
         _log = log;
         _favorites = new FavoritesStore(launcherRoot);
+        _launcherRoot = launcherRoot;
         _tempDir = Path.Combine(Path.GetTempPath(), "pcllike-content");
 
         // 先把栏目设成 Mod，但**不**自动搜 —— 构造函数里发网络请求，
@@ -470,6 +472,9 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
 
         var tmp = "";
 
+        // 整合包的清单（只有整合包才读）
+        ModPackPlan? plan = null;
+
         IsBusy = true;
 
         try
@@ -505,6 +510,10 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
 
             if (kind == ContentKind.ModPack)
             {
+                // 清单先读出来留着：安装函数内部读的是同一个 zip，但那个临时文件
+                // 在 finally 里就被删了，装完之后再想读就得重新下载一遍。
+                plan = ModPackInstaller.ReadPlan(tmp);
+
                 result = await ModPackInstaller.InstallAsync(
                     tmp,
                     inst,
@@ -524,6 +533,13 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
             {
                 _log(LogKind.Ok, $"{Title}：{row.Title} {cand.Version} → {result.InstalledPath ?? inst.GameDir}");
                 StatusMessage = $"{result.Message}（{size / 1024.0 / 1024.0:0.#} MB）";
+
+                // 整合包装完不等于能玩。包是用来"配出一个能跑的游戏环境"的，
+                // 光把 Mod 铺进 mods/ 只会让游戏带着一堆 Mod 起不来：它要求的
+                // 那个加载器版本本机可能压根没装，实例的版本也还指着原来那个。
+                // 这一步把"装得下来"补成"装完能开局"。
+                if (kind == ContentKind.ModPack)
+                    await InstallPackEnvironmentAsync(inst, plan);
 
                 // 装完把收藏也顺手点一下？不 —— 收藏是用户的意愿，不替他决定。
                 if (kind == ContentKind.World || kind == ContentKind.Datapack)
@@ -558,6 +574,129 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
             }
         }
     }
+
+    /// <summary>
+    /// 整合包装完之后把游戏环境补齐：安装包要求的加载器，并把当前实例指到它。
+    ///
+    /// 为什么非要这一步：Modrinth 整合包只保证"文件都在"，不保证"能开"。实测
+    /// 一个 1.20.1 + Fabric 0.14.23 的包，51 个文件全部落盘、Mod 全部加载
+    /// （149 个 Mod 的 "Loading 149 mods:" 都打出来了），但如果加载器没装/版本
+    /// 不对，Fabric 会直接抛：
+    ///   Class path entries reference missing files: .../&lt;loaderId&gt;.jar
+    /// 用户看到的就是"安装成功"四个字，然后点启动游戏什么都没发生。
+    ///
+    /// 失败不回滚、也不把整次安装判负 —— Mod 和配置已经躺在磁盘上了，那是
+    /// 有意义的成果；这一步只是尽力把最后一段路铺上，铺不上要说清楚。
+    /// </summary>
+    private async Task InstallPackEnvironmentAsync(GameInstance inst, ModPackPlan? plan)
+    {
+        if (plan is null)
+        {
+            _log(LogKind.Warning, $"{Title}：读不出整合包清单，没法自动补版本和加载器。");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(plan.LoaderName) || plan.LoaderName == "vanilla")
+        {
+            // 原版包：只要原版装着就行
+            if (!Directory.Exists(Path.Combine(_launcherRoot, "versions", plan.McVersion)))
+            {
+                StatusMessage = $"{StatusMessage}（这个包是原版 {plan.McVersion}，要先去「下载」把原版装上）";
+            }
+
+            return;
+        }
+
+        var kind = PackLoaderKind(plan.LoaderName);
+        if (kind is null)
+        {
+            _log(LogKind.Warning, $"{Title}：不认识的加载器「{plan.LoaderName}」，无法自动安装。");
+            return;
+        }
+
+        try
+        {
+            var installer = new PclLike.Core.Minecraft.LoaderInstaller(_launcherRoot);
+            using (installer)
+            {
+                var already = Directory.Exists(
+                    Path.Combine(_launcherRoot, "versions",
+                        PackLoaderVersionId(plan.LoaderName, plan.LoaderVersion ?? "", plan.McVersion)));
+
+                StatusMessage = already
+                    ? $"整合包还要求 {plan.LoaderName} {plan.LoaderVersion}，本机已有，直接指向它…"
+                    : $"整合包还要求 {plan.LoaderName} {plan.LoaderVersion}，正在装加载器…";
+
+                var p = new Progress<PclLike.Core.Minecraft.LoaderInstaller.Progress>(
+                    x => StatusMessage = already
+                        ? StatusMessage
+                        : $"正在装 {plan.LoaderName} {plan.LoaderVersion}：{x.Stage} {x.Done}/{x.Total}");
+
+                var r = await installer.InstallAsync(
+                    kind.Value,
+                    plan.McVersion,
+                    plan.LoaderVersion,
+                    p,
+                    s => _log(LogKind.Info, $"{Title}：{s}"),
+                    _cts.Token);
+
+                // 把实例指到这个版本上 —— 不然"当前实例"还是原来那个，
+                // 玩家点启动游戏跑的仍然是没有 Mod 的原版。
+                inst.VersionId = r.VersionId;
+
+                // 存盘 —— 只改内存里的对象没用，下次开启动器读的还是文件。
+                try { new PclLike.Core.Storage.InstanceStore(_launcherRoot).Save(inst); }
+                catch (Exception se)
+                {
+                    _log(LogKind.Warning, $"{Title}：实例存盘失败 —— {se.Message}");
+                }
+
+                foreach (var w in r.Warnings.Take(5))
+                    _log(LogKind.Warning, $"{Title}：加载器警告 —— {w}");
+
+                _log(LogKind.Ok, $"{Title}：实例已指向 {r.VersionId}");
+
+                StatusMessage = $"{StatusMessage}完成：{r.VersionId}。别忘了确认这个实例的版本选的是它。";
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log(LogKind.Error, $"{Title}：自动装加载器失败 {ex.GetType().Name} —— {ex.Message}");
+            StatusMessage = $"{StatusMessage}（但自动装 {plan.LoaderName} {plan.LoaderVersion} 失败了，"
+                + "请去「下载」手动装一次这个加载器，再把实例的版本改成它）";
+        }
+    }
+
+    /// <summary>
+    /// 加载器的版本目录名。这四种命名互不相同，是各家 provider 自己的约定，
+    /// 猜错不会报错、只会让"本机已有"永远判成 false，然后就白装一遍
+    /// （所以这里是照着真实目录名写的，不是拼一个看起来合理的字符串）：
+    ///   fabric-loader-0.20.1-1.20.1 / quilt-loader-x-y / 1.20.1-forge-47.4.28 / neoforge-47.1.106
+    /// </summary>
+    private static string PackLoaderVersionId(string loaderName, string loaderVersion, string mcVersion) =>
+        loaderName.ToLowerInvariant() switch
+        {
+            "fabric" => $"fabric-loader-{loaderVersion}-{mcVersion}",
+            "quilt" => $"quilt-loader-{loaderVersion}-{mcVersion}",
+            "forge" => $"{mcVersion}-forge-{loaderVersion}",
+            "neoforge" => $"neoforge-{loaderVersion}",
+            _ => $"{loaderName}-{loaderVersion}",
+        };
+
+    /// <summary>整合包里的加载器名 → LoaderKind。认不出返回 null。</summary>
+    private static PclLike.Core.Minecraft.Loaders.LoaderKind? PackLoaderKind(string? name) =>
+        name?.ToLowerInvariant() switch
+        {
+            "fabric" => PclLike.Core.Minecraft.Loaders.LoaderKind.Fabric,
+            "quilt" => PclLike.Core.Minecraft.Loaders.LoaderKind.Quilt,
+            "forge" => PclLike.Core.Minecraft.Loaders.LoaderKind.Forge,
+            "neoforge" => PclLike.Core.Minecraft.Loaders.LoaderKind.NeoForge,
+            _ => null,
+        };
 
     /// <summary>Modrinth 的项目类型 → 我们的内容类型。认不出返回 null。</summary>
     public static ContentKind? KindFor(string? projectType) => projectType?.ToLowerInvariant() switch

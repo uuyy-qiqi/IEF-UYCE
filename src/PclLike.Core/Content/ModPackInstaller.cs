@@ -189,40 +189,84 @@ public static class ModPackInstaller
 
             // 2) 再逐个下文件。失败只记账，不打断
             var ok = 0;
-            var failures = new List<string>();
+            var failed = new List<ModPackFile>();
 
-            for (var i = 0; i < plan.Files.Count; i++)
+            await DownloadPassAsync(plan.Files, 1).ConfigureAwait(false);
+
+            // 3) 失败的那些补一轮。
+            //
+            // 实测：同一个包 51 个文件，第一轮 49 成功、2 个撞在死节点上失败。
+            // 这种失败是暂时的（边缘 IP 池里那一颗恰好不通），隔几秒再试通常就过。
+            // 整合包动辄几百 MB、十几分钟，为了 2 个文件让用户手动重跑整个流程
+            // 是最差的体验 —— 所以这里替他把那一轮补上。
+            if (failed.Count > 0 && !ct.IsCancellationRequested)
             {
-                ct.ThrowIfCancellationRequested();
+                log?.Report($"{failed.Count} 个文件第一次没下来，隔 3 秒再补一轮："
+                            + string.Join("、", failed.Take(5).Select(f => f.FileName)));
 
-                var file = plan.Files[i];
+                await Task.Delay(TimeSpan.FromSeconds(3), ct).ConfigureAwait(false);
 
-                var dest = ContentInstaller.ResolveInside(gameDir, file.Path);
-                if (dest is null)
-                {
-                    failures.Add($"{file.Path}（路径越界）");
-                    continue;
-                }
+                var retry = failed.ToList();
+                failed.Clear();
 
-                log?.Report($"下载 {i + 1}/{plan.Files.Count}：{file.FileName}");
-
-                bool done;
-                try
-                {
-                    done = await fetcher(file, dest, ct).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch
-                {
-                    done = false;
-                }
-
-                if (done) ok++;
-                else failures.Add(file.FileName);
+                await DownloadPassAsync(retry, 2).ConfigureAwait(false);
             }
+
+            async Task DownloadPassAsync(IReadOnlyList<ModPackFile> files, int round)
+            {
+                for (var i = 0; i < files.Count; i++)
+                {
+                    ct.ThrowIfCancellationRequested();
+
+                    var file = files[i];
+
+                    var dest = ContentInstaller.ResolveInside(gameDir, file.Path);
+                    if (dest is null)
+                    {
+                        failed.Add(file);
+                        continue;
+                    }
+
+                    // 已经在了、而且内容对得上 → 不用再下一次。
+                    //
+                    // 整合包动辄几百 MB、十几分钟。没有这一条的话，重跑一次
+                    // （哪怕只是补上一篇里失败的那两三个文件）会把 49 个已经
+                    // 下好的文件全下第二遍 —— 用户为了 2 个文件等 10 分钟。
+                    // 只在 sha1 对得上时才跳；清单没给 sha1 就老实重下。
+                    if (round == 1 && MatchesSha1(dest, file.Sha1))
+                    {
+                        ok++;
+                        continue;
+                    }
+
+                    log?.Report(round == 1
+                        ? $"下载 {i + 1}/{files.Count}：{file.FileName}"
+                        : $"补下 {i + 1}/{files.Count}：{file.FileName}");
+
+                    bool done;
+                    try
+                    {
+                        done = await fetcher(file, dest, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch
+                    {
+                        done = false;
+                    }
+
+                    if (done) ok++;
+                    else failed.Add(file);
+                }
+            }
+
+            var failures = failed
+                .Select(f => ContentInstaller.ResolveInside(gameDir, f.Path) is null
+                    ? $"{f.Path}（路径越界）"
+                    : f.FileName)
+                .ToList();
 
             var message = $"成功 {ok} / 失败 {failures.Count}";
 
@@ -430,6 +474,34 @@ public static class ModPackInstaller
         var name = raw.Replace('\\', '/');
         while (name.StartsWith("./", StringComparison.Ordinal)) name = name[2..];
         return name;
+    }
+
+    /// <summary>
+    /// 文件是不是已经下好了（内容与清单给的 sha1 一致）。
+    ///
+    /// sha1 缺失时一律返回 false —— "不知道对不对" 只能按"没下好"处理，
+    /// 宁可多下一次，也不能把半个文件当成下完了（那会让游戏在加载 Mod 时炸）。
+    /// </summary>
+    private static bool MatchesSha1(string path, string? sha1)
+    {
+        if (string.IsNullOrWhiteSpace(sha1)) return false;
+
+        try
+        {
+            if (!File.Exists(path)) return false;
+
+            // 大小对不上的先短路，省掉大文件的白算
+            var info = new FileInfo(path);
+            if (info.Length == 0) return false;
+
+            using var fs = File.OpenRead(path);
+            var hash = Convert.ToHexString(System.Security.Cryptography.SHA1.HashData(fs));
+            return hash.Equals(sha1, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static string? GetString(JsonElement obj, string property)
