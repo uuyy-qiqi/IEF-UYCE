@@ -880,6 +880,137 @@ public sealed class MainViewModel : ObservableObject
         => _selectedInstance
            ?? Store.EnsureDefault(SelectedVersion?.Id ?? Versions.FirstOrDefault()?.Id ?? "");
 
+    // ─────────────────── 拖放 ───────────────────
+
+    /// <summary>
+    /// 用户往窗口里拖了文件。返回一段给用户看的总结。
+    ///
+    /// 分流规则（PCL2 也是这么分的，用户的直觉就在这儿）：
+    ///  - **整合包 → 新建一个独立实例再装进去**。整合包自带版本和加载器要求，
+    ///    塞进现有实例会把人家的 Mod 冲掉、版本要求也会打架；而且整合包本来
+    ///    就是一个"完整的游戏环境"，对应一个实例才是对的模型。
+    ///  - **Mod / 资源包 / 光影包 / 数据包 / 存档 → 装进"当前实例"**。
+    ///    拖进主界面 = 装到你正在玩的那个实例，不用再选一次。
+    ///
+    /// 认不出来的文件一个都不动，只报"我认不出这是什么" —— 猜错的代价是把
+    /// 存档装进 resourcepacks/，用户既看不见也查不出来。
+    /// </summary>
+    public async Task<string> DropFilesAsync(IReadOnlyList<string> paths)
+    {
+        if (paths.Count == 0) return "";
+
+        var lines = new List<string>();
+
+        foreach (var path in paths)
+        {
+            var c = PclLike.Core.Content.DroppedContentClassifier.Classify(path);
+
+            switch (c.Kind)
+            {
+                case PclLike.Core.Content.DroppedKind.ModPack:
+                {
+                    // 包名当实例名：把 "Fabulously.Optimized-5.4.1.mrpack" 变成
+                    // "Fabulously Optimized 5.4.1"。点号连字符换成空格，看着像人起的。
+                    // 用包自己的名字最好（"Fabulously Optimized"）；没有才退回文件名，
+                    // 而文件名会得到「pack abc006d7」那种谁也不想在实例列表里看到的东西。
+                    // 开 zip 读清单只做一次（mc 版本和包名都从同一份清单来）。
+                    var plan = TryReadPackPlan(path);
+
+                    var baseName = plan?.Name;
+                    if (string.IsNullOrWhiteSpace(baseName)) baseName = Path.GetFileNameWithoutExtension(c.FileName);
+                    baseName = baseName!.Trim();
+
+                    // 包名是人写的，目录名里不能出现的字符什么都可能有
+                    baseName = new string(baseName
+                        .Select(ch => "\\/:*?\"<>|".Contains(ch) || char.IsControl(ch) ? ' ' : ch)
+                        .ToArray());
+
+                    while (baseName.Contains("  ")) baseName = baseName.Replace("  ", " ");
+                    baseName = baseName.Trim();
+                    if (baseName.Length == 0) baseName = "拖入的整合包";
+                    if (baseName.Length > 40) baseName = baseName[..40].Trim();
+
+                    AppendLog(LogKind.Info, $"拖入整合包：{c.FileName} → 新建实例「{baseName}」");
+
+                    // 新实例挂哪个版本？优先挂这个包自己要的那个原版 ——
+                    // 那才是这个实例将来真正要跑的东西（装完还会被指到加载器
+                    // 版本上）。包要求的原版本机没装的话，退回当前选中的版本，
+                    // 至少别让"新建实例"卡住。
+                    var packMc = plan?.McVersion;
+                    var pin = packMc is not null
+                              && File.Exists(Path.Combine(GameRoot, "versions", packMc, packMc + ".json"))
+                        ? packMc
+                        : SelectedVersion?.Id;
+
+                    var inst = CreateInstance(baseName, pin, isolated: true);
+
+                    if (inst is null)
+                    {
+                        lines.Add($"✗ {c.FileName}：建不出实例（先选一个游戏版本，或者换个名字再拖）");
+                        break;
+                    }
+
+                    RefreshInstances();
+
+                    var msg = await Content.InstallLocalPackAsync(path, inst);
+                    lines.Add($"{(msg.StartsWith("安装失败", StringComparison.Ordinal) ? "✗" : "✓")} "
+                        + $"{c.FileName} → 新实例「{inst.Name}」\n{msg}");
+                    break;
+                }
+
+                case PclLike.Core.Content.DroppedKind.Mod:
+                case PclLike.Core.Content.DroppedKind.ResourcePack:
+                case PclLike.Core.Content.DroppedKind.ShaderPack:
+                case PclLike.Core.Content.DroppedKind.Datapack:
+                {
+                    var kind = c.Kind switch
+                    {
+                        PclLike.Core.Content.DroppedKind.Mod => PclLike.Core.Content.ContentKind.Mod,
+                        PclLike.Core.Content.DroppedKind.ResourcePack => PclLike.Core.Content.ContentKind.ResourcePack,
+                        PclLike.Core.Content.DroppedKind.ShaderPack => PclLike.Core.Content.ContentKind.Shader,
+                        _ => PclLike.Core.Content.ContentKind.Datapack,
+                    };
+
+                    AppendLog(LogKind.Info, $"拖入{c.Describe}：{c.FileName} → 当前实例");
+
+                    var msg = await Content.InstallLocalContentAsync(path, kind);
+                    lines.Add($"{(msg.StartsWith("安装失败", StringComparison.Ordinal) ? "✗" : "✓")} {c.FileName}：{msg}");
+                    break;
+                }
+
+                case PclLike.Core.Content.DroppedKind.World:
+                {
+                    AppendLog(LogKind.Info, $"拖入存档：{c.FileName} → 当前实例的 saves/");
+
+                    var msg = await Content.ImportLocalWorldAsync(path);
+                    lines.Add($"{(msg.StartsWith("导入失败", StringComparison.Ordinal) ? "✗" : "✓")} {c.FileName}：{msg}");
+                    break;
+                }
+
+                default:
+                    lines.Add($"– {c.FileName}：{c.Describe}");
+                    AppendLog(LogKind.Warning, $"拖入的文件认不出来：{c.FileName} —— {c.Describe}");
+                    break;
+            }
+        }
+
+        RefreshInstances();
+        return string.Join("\n\n", lines);
+    }
+
+    /// <summary>
+    /// 读一眼整合包的清单（拿 mc 版本 + 包名），读不出来返回 null。
+    ///
+    /// 单独留这个薄封装是因为"开 zip 读清单"这件事会失败：包坏了、不是 zip、
+    /// 编码怪都能让它抛异常。而新建实例不该因为读不出名字就停摆 —— 拿不到
+    /// 就用文件名凑合。一场拖放里只读一次，mc 版本和名字共用这份结果。
+    /// </summary>
+    private static PclLike.Core.Content.ModPackPlan? TryReadPackPlan(string mrpackPath)
+    {
+        try { return PclLike.Core.Content.ModPackInstaller.ReadPlan(mrpackPath); }
+        catch { return null; }
+    }
+
     /// <summary>关窗口时把两个带网络连接的子 VM 收掉。没创建过就不创建。</summary>
     public void DisposeChildren()
     {

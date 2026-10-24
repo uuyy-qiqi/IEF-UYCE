@@ -698,6 +698,147 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
             _ => null,
         };
 
+    /// <summary>
+    /// 装一个"本地文件"整合包（用户拖进来的，不是从 Modrinth 下的）。
+    ///
+    /// 和 InstallAsync 的整合包分支是同一条路，只是跳过"找版本 + 下载" ——
+    /// 文件已经在磁盘上了。装完照样走 InstallPackEnvironmentAsync，
+    /// 也就是说拖进来的整合包同样会把包要求的加载器顺手装上。
+    /// </summary>
+    public async Task<string> InstallLocalPackAsync(string mrpackPath, GameInstance target)
+    {
+        if (IsBusy) return "启动器正忙着别的事，等它跑完再拖一次。";
+
+        IsBusy = true;
+
+        try
+        {
+            ModPackPlan? plan = null;
+            try { plan = ModPackInstaller.ReadPlan(mrpackPath); }
+            catch { /* 清单读不出来，装完再慢慢说 */ }
+
+            StatusMessage = plan is null
+                ? "正在装整合包…"
+                : $"正在装整合包「{plan.Name}」（{plan.McVersion}"
+                  + (plan.LoaderName is null ? "" : $" / {plan.LoaderName} {plan.LoaderVersion}") + "）…";
+
+            var r = await ModPackInstaller.InstallAsync(
+                mrpackPath,
+                target,
+                FetchPackFileAsync,
+                new Progress<string>(s => StatusMessage = s),
+                _cts.Token);
+
+            if (!r.Ok)
+            {
+                _log(LogKind.Warning, $"{Title}：整合包安装失败 —— {r.Message}");
+                return r.Message;
+            }
+
+            StatusMessage = r.Message;
+            _log(LogKind.Ok, $"{Title}：整合包 → {target.GameDir}（{r.Message}）");
+
+            await InstallPackEnvironmentAsync(target, plan);
+
+            return $"{r.Message}\n\n游戏目录：{target.GameDir}";
+        }
+        catch (OperationCanceledException)
+        {
+            return "安装已取消。";
+        }
+        catch (Exception ex)
+        {
+            _log(LogKind.Error, $"{Title}：整合包安装异常 {ex.GetType().Name} —— {ex.Message}");
+            return $"安装失败：{ex.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    /// <summary>装一个本地文件（Mod / 资源包 / 光影包 / 数据包）到当前实例。</summary>
+    public async Task<string> InstallLocalContentAsync(string path, ContentKind kind)
+    {
+        if (IsBusy) return "启动器正忙着别的事，等它跑完再拖一次。";
+
+        string? worldName = null;
+        if (kind == ContentKind.Datapack)
+        {
+            worldName = ResolveDatapackWorld();
+            if (worldName is null) return "没选中存档，先停下了。";
+        }
+
+        var inst = _instance();
+
+        IsBusy = true;
+
+        try
+        {
+            StatusMessage = $"正在装 {Path.GetFileName(path)}…";
+
+            var r = await ContentInstaller.InstallFileAsync(inst, kind, path, null, worldName, _cts.Token);
+
+            StatusMessage = r.Message;
+
+            if (r.Ok)
+                _log(LogKind.Ok, $"{Title}：{Path.GetFileName(path)} → {r.InstalledPath ?? inst.GameDir}");
+            else
+                _log(LogKind.Warning, $"{Title}：{Path.GetFileName(path)} 安装失败 —— {r.Message}");
+
+            return r.Message;
+        }
+        catch (OperationCanceledException)
+        {
+            return "安装已取消。";
+        }
+        catch (Exception ex)
+        {
+            _log(LogKind.Error, $"{Title}：{Path.GetFileName(path)} 安装异常 {ex.GetType().Name} —— {ex.Message}");
+            return $"安装失败：{ex.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    /// <summary>把拖进来的存档 zip 导进当前实例的 saves/。</summary>
+    public async Task<string> ImportLocalWorldAsync(string zipPath)
+    {
+        if (IsBusy) return "启动器正忙着别的事，等它跑完再拖一次。";
+
+        var inst = _instance();
+        IsBusy = true;
+
+        try
+        {
+            StatusMessage = $"正在导入存档 {Path.GetFileName(zipPath)}…";
+
+            var r = await WorldStore.ImportZipAsync(inst, zipPath, _cts.Token);
+
+            StatusMessage = r.Message;
+            if (r.Ok) _log(LogKind.Ok, $"{Title}：存档 {Path.GetFileName(zipPath)} → {r.InstalledPath ?? inst.GameDir}");
+            else _log(LogKind.Warning, $"{Title}：存档导入失败 —— {r.Message}");
+
+            RefreshWorlds();
+            return r.Message;
+        }
+        catch (OperationCanceledException)
+        {
+            return "导入已取消。";
+        }
+        catch (Exception ex)
+        {
+            _log(LogKind.Error, $"{Title}：存档导入异常 {ex.GetType().Name} —— {ex.Message}");
+            return $"导入失败：{ex.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
     /// <summary>Modrinth 的项目类型 → 我们的内容类型。认不出返回 null。</summary>
     public static ContentKind? KindFor(string? projectType) => projectType?.ToLowerInvariant() switch
     {

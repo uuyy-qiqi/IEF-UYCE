@@ -49,6 +49,14 @@ public static class Program
         if (loginIdx >= 0)
             return LoginProbe.Run(args.Skip(loginIdx).ToArray());
 
+        // 拖放探针：PclLike.exe --drop <文件> [文件...] [--install] [--instance 名字]
+        // 拖放这件事没法用工具模拟操作系统级的拖拽（那要真的按下鼠标拖过桌面），
+        // 所以把"收到一串路径之后干什么"整段抽成了可调用的方法，这里直接调它。
+        // 默认只分类不落盘；加 --install 才真装。
+        var dropIdx = Array.FindIndex(args, a => a.Equals("--drop", StringComparison.OrdinalIgnoreCase));
+        if (dropIdx >= 0)
+            return DropProbe.Run(args.Skip(dropIdx).ToArray());
+
         // 常规启动：交给 WPF 的标准流程
         var app = new App();
         app.InitializeComponent();

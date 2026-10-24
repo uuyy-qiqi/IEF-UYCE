@@ -9,6 +9,7 @@
         Background="{StaticResource BgBrush}"
         WindowStyle="None"
         AllowsTransparency="True"
+        AllowDrop="True"
         WindowStartupLocation="CenterScreen"
         UseLayoutRounding="True" SnapsToDevicePixels="True"
         TextOptions.TextFormattingMode="Display"
@@ -1649,6 +1650,26 @@
 
       </Grid>
     </Grid>
+
+    <!-- ── 拖放提示层 ──
+         盖住整个窗口，只在拖着文件悬停的时候出现。放在最外层 Grid 的最后，
+         保证它盖在顶栏和所有页面之上。
+         IsHitTestVisible=False：提示层不能抢走拖放本身 —— 它要是能接收鼠标，
+         Drop 事件就落在它身上、永远到不了窗口。 -->
+    <Border x:Name="DropHint" Visibility="Collapsed"
+            Background="#D91A6FD4" BorderBrush="#F0FFFFFF" BorderThickness="3"
+            IsHitTestVisible="False">
+      <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+        <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" FontSize="54"
+                   Foreground="White" HorizontalAlignment="Center"/>
+        <TextBlock x:Name="DropHintText" Text="松手就装"
+                   FontSize="19" FontWeight="SemiBold" Foreground="White"
+                   Margin="0,14,0,0" HorizontalAlignment="Center"/>
+        <TextBlock Text="整合包会新建一个实例；Mod / 资源包 / 光影包 / 存档装进当前实例"
+                   FontSize="12.5" Foreground="#E6FFFFFF" Margin="0,8,0,0"
+                   HorizontalAlignment="Center"/>
+      </StackPanel>
+    </Border>
 
     </Grid>
 </Window>

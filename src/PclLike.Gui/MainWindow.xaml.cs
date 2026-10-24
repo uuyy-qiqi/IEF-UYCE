@@ -1051,6 +1051,93 @@ public partial class MainWindow : Window
         }
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // 拖放：把文件拖进窗口任何位置
+    //
+    // 难点不在"接收文件"，在于**收到之后怎么判断它是什么**。整合包、资源包、
+    // 光影包、数据包、存档全都是 .zip —— 只看扩展名就会把存档装进
+    // resourcepacks/。判断在 Core 的 DroppedContentClassifier 里，这里只管
+    // 把路径交出去，再把结果说给用户听。
+    //
+    // 也正因为拖放本身没法自动测试（模拟不了操作系统级的拖拽），真正干活的
+    // 那段逻辑抽在 MainViewModel.DropFilesAsync 里，`--drop` 探针直接调它。
+    // ═══════════════════════════════════════════════════════════
+
+    protected override void OnDragEnter(DragEventArgs e)
+    {
+        base.OnDragEnter(e);
+        HandleDragOver(e);
+    }
+
+    protected override void OnDragOver(DragEventArgs e)
+    {
+        base.OnDragOver(e);
+        HandleDragOver(e);
+    }
+
+    private void HandleDragOver(DragEventArgs e)
+    {
+        var ok = e.Data.GetDataPresent(DataFormats.FileDrop);
+
+        e.Effects = ok ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+
+        if (!ok)
+        {
+            HideDropHint();
+            return;
+        }
+
+        DropHintText.Text = _vm.SelectedInstance is null
+            ? "松手就装进当前实例"
+            : $"松手就装进「{_vm.SelectedInstance.Name}」";
+
+        DropHint.Visibility = Visibility.Visible;
+    }
+
+    protected override void OnDragLeave(DragEventArgs e)
+    {
+        base.OnDragLeave(e);
+        HideDropHint();
+    }
+
+    protected override async void OnDrop(DragEventArgs e)
+    {
+        base.OnDrop(e);
+        HideDropHint();
+
+        if (e.Data.GetData(DataFormats.FileDrop) is not string[] paths || paths.Length == 0) return;
+
+        // 拖进来的可能是一堆文件，装整合包要几分钟 —— 别让用户看着界面
+        // 像卡死了却不知道在干什么（进度在状态栏和日志里）。
+        IsEnabled = false;
+
+        try
+        {
+            var summary = await _vm.DropFilesAsync(paths);
+
+            RefreshInstanceCard();
+
+            if (summary.Length > 0)
+            {
+                MessageBox.Show(this, summary, "拖放安装",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+        catch (Exception ex)
+        {
+            _vm.AppendLog(LogKind.Error, $"拖放处理失败 {ex.GetType().Name} —— {ex.Message}");
+            MessageBox.Show(this, $"处理拖进来的文件时出错了：\n{ex.Message}", "拖放安装",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            IsEnabled = true;
+        }
+    }
+
+    private void HideDropHint() => DropHint.Visibility = Visibility.Collapsed;
+
     // ── 设置 → Java ──
 
     private void RescanJava_Click(object sender, RoutedEventArgs e) => _vm.RefreshJava();
