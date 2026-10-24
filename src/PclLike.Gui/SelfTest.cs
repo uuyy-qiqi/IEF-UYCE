@@ -24,8 +24,19 @@ public static class SelfTest
 
         void Check(bool ok, string what, string? detail = null)
         {
-            if (ok) notes.Add($"  [OK]   {what}" + (detail is null ? "" : $"  →  {detail}"));
-            else failures.Add($"  [FAIL] {what}" + (detail is null ? "" : $"  →  {detail}"));
+            // 即时打印：自检要跑五分钟左右，只在最后汇总的话，一旦中途
+            // 出事（比如窗口被关掉导致后面的步骤全废），日志里看不出
+            // 到底走到哪一步了 —— 进度就是证据。
+            if (ok)
+            {
+                notes.Add($"  [OK]   {what}" + (detail is null ? "" : $"  →  {detail}"));
+                Console.WriteLine($"  [OK]   {what}" + (detail is null ? "" : $"  →  {detail}"));
+            }
+            else
+            {
+                failures.Add($"  [FAIL] {what}" + (detail is null ? "" : $"  →  {detail}"));
+                Console.WriteLine($"  [FAIL] {what}" + (detail is null ? "" : $"  →  {detail}"));
+            }
         }
 
         Window? window = null;
@@ -42,6 +53,19 @@ public static class SelfTest
             app.InitializeComponent();
 
             window = new MainWindow();
+
+            // 挪到屏幕外，也不抢焦点。
+            //
+            // 自检要跑五分钟，窗口真的摆在桌面上就等于给人一个"关掉它"的
+            // 机会 —— 而关窗会走 OnClosing：取消正在跑的下载、释放 HttpClient。
+            // 实测撞过：自检跑到一半窗口被点掉，后面的安装检查全变成
+            // "CancellationTokenSource has been disposed"，看起来像代码 bug，
+            // 其实是一次误点。窗口照样能布局、能截图，只是人看不到也点不到。
+            window.WindowStartupLocation = WindowStartupLocation.Manual;
+            window.Left = -4000;
+            window.Top = -4000;
+            window.ShowActivated = false;
+
             window.Show();
 
             vm = window.DataContext as MainViewModel;
@@ -80,9 +104,12 @@ public static class SelfTest
             Check(runButton?.IsEnabled == true, "启动按钮已启用");
             Check(runButton?.Background is SolidColorBrush, "启动按钮有背景色");
 
-            var logList = FindByName<ListBox>(window, "LogList");
-            Check(logList is not null, "找到日志列表");
-            Check(logList?.Items.Count > 0, "日志列表有内容", $"{logList?.Items.Count} 行");
+            // 日志不再是主窗口底部那个抽屉了，改成了独立窗口（LogWindow）。
+            // 所以这里反过来查：主窗口里不该再有日志列表，状态文字搬去了顶栏。
+            Check(FindByName<ListBox>(window, "LogList") is null, "主窗口底部不再挂日志列表");
+            var statusText = FindByName<TextBlock>(window, "TopStatusText");
+            Check(statusText is not null, "顶栏有状态文字");
+            Check(statusText?.Text is { Length: > 0 }, "顶栏状态文字有内容", statusText?.Text);
 
             var usernameBox = FindByName<TextBox>(window, "UsernameBox");
             Check(usernameBox?.Text is { Length: > 0 }, "用户名框有值", usernameBox?.Text);
@@ -603,10 +630,12 @@ public static class SelfTest
         Console.WriteLine();
         Console.WriteLine("========== GUI SELFTEST ==========");
 
-        foreach (var n in notes) Console.WriteLine(n);
+        // 每一项在 Check() 里已经即时打过了，这里只补汇总和失败清单 ——
+        // 否则日志里同一批结论出现两遍，真要翻日志时反而更难找。
         if (failures.Count > 0)
         {
             Console.WriteLine();
+            Console.WriteLine("失败项：");
             foreach (var f in failures) Console.WriteLine(f);
         }
 

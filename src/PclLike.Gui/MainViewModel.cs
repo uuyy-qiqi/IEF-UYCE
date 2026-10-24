@@ -883,8 +883,16 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>关窗口时把两个带网络连接的子 VM 收掉。没创建过就不创建。</summary>
     public void DisposeChildren()
     {
-        _content?.Dispose();
-        _lobby?.Dispose();
+        // 顺手把字段清空：释放过的实例不该再被 Content / Lobby 发出去。
+        // 否则第二次访问拿到的是一具"尸体"，用它的每一次调用都会在
+        // 莫名其妙的地方炸（CancellationTokenSource has been disposed）。
+        var content = _content;
+        var lobby = _lobby;
+        _content = null;
+        _lobby = null;
+
+        content?.Dispose();
+        lobby?.Dispose();
     }
 
     // ─────────────────── 百宝箱 ───────────────────

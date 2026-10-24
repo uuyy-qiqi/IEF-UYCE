@@ -1,7 +1,8 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using PclLike.Core.Skins;
 using PclLike.Gui.Skins;
@@ -43,6 +44,73 @@ public partial class MainWindow : Window
 
         BuildNav();
         ShowTopTab("launch");
+    }
+
+    /// <summary>
+    /// 窗口句柄一就绪就给它打开亚克力模糊。
+    ///
+    /// 必须在 SourceInitialized 之后才能拿句柄 —— 在这之前 HWND 还是 0，
+    /// 底层那个 SetWindowCompositionAttribute 会直接失败。系统不支持时它只是
+    /// 静默返回 false，窗口就还是主题里那个半透明浅色底，不影响使用。
+    /// </summary>
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+
+        // 窗口是 AllowsTransparency="True"（分层窗口），走的是 WPF 自己的逐像素
+        // alpha 合成 —— 真正透出桌面。
+        //
+        // 为什么不叠 DWM 那层亚克力：实测（tools\shots\s_bare_wallpaper.png 与
+        // s_real_wallpaper.png 逐像素比）Win11 的亚克力材质本身几乎是白的，盖上
+        // 去之后即使把我们的 alpha 从 30% 调到 15% 也测不出任何变化 —— 看上去
+        // 就是一块不透明的白板。分层窗口还给不了 DWM 材质，两者只能选一个：
+        // 选了"真的能看见桌面"。
+        Console.WriteLine($"[backdrop] 分层透明 = {AllowsTransparency}");
+
+        // 无边框窗口的圆角得自己跟 DWM 要（Win11 才有；Win10 会失败，忽略即可）
+        WindowBackdrop.TryRoundCorners(this);
+    }
+
+    /// <summary>
+    /// 顶栏空白处按住可以拖窗口 —— 原生标题栏去掉以后得自己实现。
+    ///
+    /// 顶栏里的页签、按钮会把鼠标按下事件吃掉（ButtonBase 会捕获鼠标），
+    /// 所以这里只会被"空白处"触发，点头上那些控件不会误拖。
+    /// </summary>
+    private void TopBar_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left) return;
+
+        if (e.ClickCount == 2)
+        {
+            ToggleMaximize();
+            return;
+        }
+
+        try
+        {
+            DragMove();
+        }
+        catch (InvalidOperationException)
+        {
+            // 双击时第一下已经进了 DragMove，系统会抛这个 —— 无所谓
+        }
+    }
+
+    private void Maximize_Click(object sender, RoutedEventArgs e) => ToggleMaximize();
+
+    private void ToggleMaximize()
+        => WindowState = WindowState == WindowState.Maximized
+            ? WindowState.Normal
+            : WindowState.Maximized;
+
+    /// <summary>最大化/还原换一下按钮图标（E922 最大化 / E923 还原）。</summary>
+    protected override void OnStateChanged(EventArgs e)
+    {
+        base.OnStateChanged(e);
+
+        if (MaxButton.Template?.FindName("Glyph", MaxButton) is TextBlock glyph)
+            glyph.Text = WindowState == WindowState.Maximized ? "\uE923" : "\uE922";
     }
 
     // ────────────────────────────────────────────────────────────
@@ -197,8 +265,23 @@ public partial class MainWindow : Window
         //   其余页 —— 子导航列表。
         // PCL 也是这个做法，所以启动页的左栏不跟着子导航走。
         var isLaunch = tab == "launch";
-        PlayerHost.Visibility = isLaunch ? Visibility.Visible : Visibility.Collapsed;
+        // 人卡常驻左上角（四个大页签都在），所以这里只在"导航"和"启动按钮"之间二选一：
+        // 启动页左栏让位给启动按钮，其余页给导航。
+        LaunchActions.Visibility = isLaunch ? Visibility.Visible : Visibility.Collapsed;
         NavHost.Visibility = isLaunch ? Visibility.Collapsed : Visibility.Visible;
+
+        // 人卡的位置也跟着页签走（照 PCL CE 的启动页）：
+        //   启动页 —— 上半格占满、人卡在其中垂直居中，底下两个按钮贴底；
+        //   其余页 —— 人卡回到顶部，整块剩余高度让给导航列表。
+        PlayerSection.Height = isLaunch
+            ? new GridLength(1, GridUnitType.Star)
+            : GridLength.Auto;
+        NavSection.Height = isLaunch
+            ? GridLength.Auto
+            : new GridLength(1, GridUnitType.Star);
+        PlayerHost.VerticalAlignment = isLaunch
+            ? VerticalAlignment.Center
+            : VerticalAlignment.Top;
 
         BuildNav();
     }
@@ -230,9 +313,8 @@ public partial class MainWindow : Window
 
         if (key == "logs")
         {
-            // 「查看日志」= 展开底部日志抽屉
-            LogToggle.IsChecked = true;
-            LogList.Visibility = Visibility.Visible;
+            // 「查看日志」= 开日志窗口（以前是展开窗口底部那个抽屉）
+            OpenLogWindow();
         }
     }
 
@@ -353,13 +435,12 @@ public partial class MainWindow : Window
     // ────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// 载入内置 Steve 皮肤并立刻画出来。
+    /// 载入内置皮肤字节，并先画上"没有皮肤时那张脸"。
     ///
-    /// 这一步决定了两件事：
-    ///   1. 界面一打开就有头像（不用等网络）
-    ///   2. <see cref="SkinService.DefaultSkinBytes"/> 有内容 —— 否则
-    ///      ResolveAsync 的网络兜底会返回空字节，TryParse 失败，
-    ///      最后什么都画不出来。
+    /// <see cref="SkinService.DefaultSkinBytes"/> 必须有内容 —— 否则
+    /// ResolveAsync 的网络兜底会返回空字节，TryParse 失败，最后什么都拿不到。
+    /// 但那字节不拿来当头像：没皮肤可画时界面显示的是 avatar_fallback.png
+    /// 那张方脸（用户挑的），比内置 Steve 好看得多。
     /// </summary>
     private void ApplyDefaultHead()
     {
@@ -371,17 +452,11 @@ public partial class MainWindow : Window
 
             using var ms = new MemoryStream();
             info.Stream.CopyTo(ms);
-            var bytes = ms.ToArray();
+            _skins.DefaultSkinBytes = ms.ToArray();
 
-            _skins.DefaultSkinBytes = bytes;
-
-            if (SkinHead.TryParse(bytes, out var head))
-            {
-                PlayerHead.Head = head;
-
-                // 内置皮肤只能算"离线模式"——除非后面网络查到了真皮肤
-                PlayerAuthText.Text = "离线模式";
-            }
+            // 头像先留空 —— 让 PlayerFallback 那张图露出来。
+            // 查不到真皮肤时这就是最终显示的；查到了再换成皮肤脸。
+            ShowFallbackAvatar();
         }
         catch
         {
@@ -389,11 +464,32 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>显示"没有皮肤"那张默认脸。</summary>
+    private void ShowFallbackAvatar()
+    {
+        PlayerHead.Head = null;
+        PlayerHead.Visibility = Visibility.Collapsed;
+        PlayerFallback.Visibility = Visibility.Visible;
+
+        // 这里不再动 PlayerAuthText：有没有皮肤、和"是不是正版账号"是两件事。
+        // 登录成功了但皮肤接口没查到（掉线、接口抽风），账号照样是正版 ——
+        // 早先在这里写死"离线模式"，头像就成了账号状态的替身，会骗人。
+        // 那一行现在由 RefreshPlayerCard 按账号状态决定。
+    }
+
+    /// <summary>切到真实皮肤脸。</summary>
+    private void ShowSkinHead(SkinHead head)
+    {
+        PlayerHead.Head = head;
+        PlayerHead.Visibility = Visibility.Visible;
+        PlayerFallback.Visibility = Visibility.Collapsed;
+    }
+
     /// <summary>
-    /// 拉取并渲染 3D 头像。
+    /// 拉取并渲染头像。
     ///
     /// 顺序：正版登录时优先按 UUID 查（准），否则按玩家名查（离线场景），
-    /// 查不到就停在已经画好的内置 Steve 上 —— 所以这个方法是"改善"而非"必须"。
+    /// 查不到就停在默认那张脸上 —— 所以这个方法是"改善"而非"必须"。
     /// </summary>
     private async Task LoadSkinAsync()
     {
@@ -410,30 +506,48 @@ public partial class MainWindow : Window
             if (result.Source == SkinSource.Default) return;
 
             if (!SkinHead.TryParse(result.PngBytes, out var head))
-                return;   // 字节不是标准皮肤，保持默认
+                return;   // 字节不是标准皮肤，保持默认那张脸
 
-            PlayerHead.Head = head;
+            ShowSkinHead(head);
 
-            PlayerAuthText.Text = result.Source switch
-            {
-                SkinSource.MojangProfile => "正版验证",
-                SkinSource.MojangByUsername => "正版验证",
-                SkinSource.LocalFile => "本地皮肤",
-                _ => "离线模式",
-            };
+            // 皮肤只负责"本地皮肤"这一档 —— "正版验证"/"离线模式"由账号状态决定
+            // （见 RefreshPlayerCard）。上面已经因为 Default 提前返回，所以这里
+            // 剩下的只可能是真皮肤。
+            if (result.Source == SkinSource.LocalFile)
+                PlayerAuthText.Text = "本地皮肤";
         }
         catch
         {
-            // 网络失败无所谓，默认头像已经在显示
+            // 网络失败无所谓，默认那张脸已经在显示
         }
+    }
+
+    /// <summary>
+    /// 刷新左边那张玩家卡：名字和身份都跟着账号走。
+    ///
+    /// 名字不能用 Config.Username —— 那是"离线名"。正版登录后真正的身份是
+    /// 账号里的玩家名，启动时 --username 用的也是它。两个名字混着显示，
+    /// 用户会以为自己在玩离线档（他就这么问过）。
+    /// </summary>
+    private void RefreshPlayerCard()
+    {
+        var p = _vm.Accounts.Profile;
+
+        PlayerNameText.Text = string.IsNullOrWhiteSpace(p?.Name) ? _vm.Username : p!.Name;
+        PlayerAuthText.Text = p is { IsOnline: true } ? "正版验证" : "离线模式";
     }
 
     private void OnVmPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName is nameof(MainViewModel.Username))
         {
-            PlayerNameText.Text = _vm.Username;
+            RefreshPlayerCard();
             _ = LoadSkinAsync();
+        }
+        else if (e.PropertyName is nameof(MainViewModel.AccountLabel))
+        {
+            // 登录 / 退出登录 / 续期成功都会让 AccountLabel 变，卡片要跟着换
+            RefreshPlayerCard();
         }
     }
 
@@ -446,17 +560,15 @@ public partial class MainWindow : Window
         _vm.RefreshJava();
         UpdateJavaUi();
         _vm.RefreshAccount();
+        RefreshPlayerCard();
 
         // 实例要先读出来：启动页那张卡显示的是实例名，启动时也按它决定 --gameDir
         _vm.RefreshInstances();
         RefreshInstanceCard();
 
-        // 启动时按配置决定外观：先日志抽屉，再默认页签
+        // 启动时按配置决定外观：先日志窗口，再默认页签
         if (_vm.Config.AutoExpandLog)
-        {
-            LogToggle.IsChecked = true;
-            LogList.Visibility = Visibility.Visible;
-        }
+            OpenLogWindow();
 
         var startTab = _vm.Config.DefaultTab;
         if (!string.IsNullOrWhiteSpace(startTab) && startTab != "launch")
@@ -470,6 +582,7 @@ public partial class MainWindow : Window
                 Dispatcher.Invoke(() =>
                 {
                     _vm.RefreshAccount();
+                    RefreshPlayerCard();
                     _ = LoadSkinAsync();
                 });
         });
@@ -509,6 +622,7 @@ public partial class MainWindow : Window
         dlg.AccountChanged += () =>
         {
             _vm.RefreshAccount();
+            RefreshPlayerCard();
             _ = LoadSkinAsync();
         };
         dlg.ShowDialog();
@@ -572,6 +686,18 @@ public partial class MainWindow : Window
     /// </summary>
     internal Window InstancesForShot() => new InstancesWindow(_vm);
 
+    /// <summary>截图探针要造日志窗口，需要拿到 ViewModel。</summary>
+    internal MainViewModel ViewModelForShot() => _vm;
+
+    /// <summary>
+    /// 账号对话框也是独立窗口，同样得单独开一个给截图探针用。
+    ///
+    /// 它现在有两种长相，取决于设置里那个应用号：默认（内嵌浏览器登录）和
+    /// "自定义应用号被忽略"（会多出一行黄字说明）。探针要能截到后者 ——
+    /// 那行字是给用户看的解释，写错了没人会知道。
+    /// </summary>
+    internal Window AccountForShot() => new AccountDialog(_vm.Accounts, _vm.Config.MicrosoftClientId);
+
     /// <summary>
     /// 把「当前实例」卡上的文字刷新一遍。
     ///
@@ -613,19 +739,32 @@ public partial class MainWindow : Window
             panel.Visibility = tb.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private void LogToggle_Click(object sender, RoutedEventArgs e)
+    private LogWindow? _logWindow;
+
+    /// <summary>
+    /// 打开日志窗口。
+    ///
+    /// 日志以前是挂在窗口底部的一个抽屉。它会一直占着窗口最下面那一条，
+    /// 而且正好压在左栏「启动游戏」下面，看着很脏 —— 现在挪进独立窗口，
+    /// 想看的时候再开（工具 → 百宝箱 → 启动器日志，或帮助库 → 查看日志）。
+    ///
+    /// 只留一个实例：再点一次就把已经开着的那个拉到前面，
+    /// 不然用户会开出一堆一模一样的日志窗。
+    /// </summary>
+    private void OpenLogWindow()
     {
-        LogList.Visibility = LogToggle.IsChecked == true
-            ? Visibility.Visible
-            : Visibility.Collapsed;
+        if (_logWindow is { IsLoaded: true })
+        {
+            _logWindow.Activate();
+            return;
+        }
+
+        _logWindow = new LogWindow(_vm) { Owner = this };
+        _logWindow.Closed += (_, _) => _logWindow = null;
+        _logWindow.Show();
     }
 
-    /// <summary>展开日志抽屉（工具页那两处按钮复用）。</summary>
-    private void ShowLog_Click(object sender, RoutedEventArgs e)
-    {
-        LogToggle.IsChecked = true;
-        LogList.Visibility = Visibility.Visible;
-    }
+    private void ShowLog_Click(object sender, RoutedEventArgs e) => OpenLogWindow();
 
     private void ClearLog_Click(object sender, RoutedEventArgs e) => _vm.ClearLog();
 

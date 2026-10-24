@@ -27,7 +27,7 @@ internal static class WindowShot
         // 悄悄改变另一个参数的含义（曾经把 "--settle" 当成了页面名）。
         var outPath = args.Length > 1 ? args[1] : "window.png";
 
-        var known = new[] { "launch", "download", "settings", "tools", "instances" };
+        var known = new[] { "launch", "download", "settings", "tools", "instances", "account", "login", "log" };
 
         var page = args.Skip(1).FirstOrDefault(a => known.Contains(a));
 
@@ -111,22 +111,61 @@ internal static class WindowShot
         // 导航都做完了，现在才真正等数据
         PumpFor(settleSec);
 
-        // 实例管理是个独立窗口（对话框），不是主窗口的一页，
+        // 实例管理 / 账号都是独立窗口（对话框），不是主窗口的一页，
         // 所以要单独开一个来截。
         Window shotTarget = win;
 
-        if (page == "instances")
+        if (page is "instances" or "account")
         {
-            var dlg = win.InstancesForShot();
-            dlg.Width = w;
-            dlg.Height = h;
+            var dlg = page == "instances" ? win.InstancesForShot() : win.AccountForShot();
             dlg.WindowStartupLocation = WindowStartupLocation.Manual;
             dlg.Left = -10000;
             dlg.Top = -10000;
             dlg.ShowInTaskbar = false;
+
+            // 这两个对话框是 SizeToContent=Height 的，硬设尺寸会把内容挤变形，
+            // 所以只在显式给了尺寸（或沿用实例窗口的老行为）时才覆盖。
+            if (page == "instances" || sizes.Length >= 1) dlg.Width = w;
+            if (page == "instances" || sizes.Length > 1) dlg.Height = h;
+
             dlg.Show();
             dlg.UpdateLayout();
             Pump();
+            shotTarget = dlg;
+        }
+
+        // 登录窗口：内容要联网渲染，所以多等几秒。
+        //
+        // 注意 WebView2 是独立的合成表面，RenderTargetBitmap 拍不到网页本身 ——
+        // 这张图只用来看窗口外壳（标题、换个微软账号按钮、底部状态行）的排版。
+        if (page == "login")
+        {
+            var dlg = new LoginWindow(new PclLike.Core.Login.MicrosoftAuth(null));
+            dlg.WindowStartupLocation = WindowStartupLocation.Manual;
+            dlg.Left = -10000;
+            dlg.Top = -10000;
+            dlg.ShowInTaskbar = false;
+            dlg.Width = w;
+            dlg.Height = h;
+            dlg.Show();
+            dlg.UpdateLayout();
+            PumpFor(8);
+            shotTarget = dlg;
+        }
+
+        // 日志窗口：也只截外壳，看排版用。
+        if (page == "log")
+        {
+            var dlg = new LogWindow(win.ViewModelForShot());
+            dlg.WindowStartupLocation = WindowStartupLocation.Manual;
+            dlg.Left = -10000;
+            dlg.Top = -10000;
+            dlg.ShowInTaskbar = false;
+            dlg.Width = w;
+            dlg.Height = h;
+            dlg.Show();
+            dlg.UpdateLayout();
+            PumpFor(3);
             shotTarget = dlg;
         }
 
