@@ -24,7 +24,14 @@ public sealed class GameLauncher
         string WorkingDirectory,
         IReadOnlyDictionary<string, string>? EnvironmentVariables = null);
 
-    public sealed record LaunchHandle(Process Process, string CommandLine, string LogPath);
+    /// <summary>
+    /// 一次启动的句柄。
+    ///
+    /// Log 是 launch-*.log 的写入器，必须跟着句柄一起走：启动器一直开着它，
+    /// 游戏退了也不关的话，那个文件就一直被占用 —— 用户想删掉实例目录会
+    /// 被 Windows 拦下来（"文件正被另一个程序使用"）。
+    /// </summary>
+    public sealed record LaunchHandle(Process Process, string CommandLine, string LogPath, StreamWriter Log);
 
     /// <summary>把完整命令行拼出来，用于日志与排错。</summary>
     public static string RenderCommandLine(LaunchRequest req)
@@ -73,16 +80,25 @@ public sealed class GameLauncher
 
         var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
 
+        // 进程退出后仍有零星输出回调在路上，那时写入器可能已经关了。
+        // 丢几行日志远好过在回调里抛出未捕获异常——后者会直接崩掉启动器。
+        void Write(string line)
+        {
+            try { logStream.WriteLine(line); }
+            catch (ObjectDisposedException) { }
+            catch (IOException) { }
+        }
+
         proc.OutputDataReceived += (_, e) =>
         {
             if (e.Data is null) return;
-            logStream.WriteLine(e.Data);
+            Write(e.Data);
             onStdout?.Invoke(e.Data);
         };
         proc.ErrorDataReceived += (_, e) =>
         {
             if (e.Data is null) return;
-            logStream.WriteLine(e.Data);
+            Write(e.Data);
             onStderr?.Invoke(e.Data);
         };
 
@@ -90,17 +106,26 @@ public sealed class GameLauncher
         proc.BeginOutputReadLine();
         proc.BeginErrorReadLine();
 
-        return new LaunchHandle(proc, RenderCommandLine(req), logPath);
+        return new LaunchHandle(proc, RenderCommandLine(req), logPath, logStream);
     }
 
     /// <summary>等待退出并扫描日志判定是否崩溃。</summary>
     public static async Task<(int ExitCode, bool LikelyCrashed, string? Reason)> WaitAsync(
         LaunchHandle handle, CancellationToken ct = default)
     {
-        await handle.Process.WaitForExitAsync(ct).ConfigureAwait(false);
-        var code = handle.Process.ExitCode;
-        var (crashed, reason) = InspectLog(handle.LogPath);
-        return (code, crashed || code != 0, reason);
+        try
+        {
+            await handle.Process.WaitForExitAsync(ct).ConfigureAwait(false);
+            var code = handle.Process.ExitCode;
+            var (crashed, reason) = InspectLog(handle.LogPath);
+            return (code, crashed || code != 0, reason);
+        }
+        finally
+        {
+            // 正常退出、崩溃、被取消都走到这儿。不关掉的话 launch-*.log
+            // 会一直被这个进程占着，删实例目录会失败。
+            try { handle.Log.Dispose(); } catch { }
+        }
     }
 
     private static readonly string[] CrashMarkers =

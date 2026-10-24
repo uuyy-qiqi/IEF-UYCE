@@ -564,6 +564,11 @@ public sealed class ModDownloader : IDisposable
     ///
     /// <paramref name="mcVersion"/> 和 <paramref name="loader"/> 会作为 facets 过滤，
     /// 传空表示不限。
+    ///
+    /// <paramref name="projectType"/> 是 Modrinth 的项目类型（mod / modpack / resourcepack /
+    /// shader / datapack / plugin）。默认 mod 是为了不破坏原有调用点；资源包和光影包
+    /// **不能**带加载器过滤 —— 它们没有加载器分类，带上会一个都搜不出来，
+    /// 所以只有 mod 与 modpack 才追加加载器 facet。
     /// </summary>
     public async Task<IReadOnlyList<ModSearchResult>> SearchModrinthListAsync(
         string query,
@@ -571,14 +576,16 @@ public sealed class ModDownloader : IDisposable
         string? loader = null,
         int limit = 20,
         int offset = 0,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string projectType = "mod")
     {
         limit = Math.Clamp(limit, 1, 100);
         offset = Math.Max(0, offset);
+        projectType = NormalizeProjectType(projectType);
 
         try
         {
-            var facets = BuildModrinthFacets(mcVersion, loader);
+            var facets = BuildModrinthFacets(mcVersion, loader, projectType);
             var url = $"{ModrinthApi}/search?query={Uri.EscapeDataString(query ?? "")}" +
                       $"&limit={limit}&offset={offset}&index=relevance" +
                       (facets.Length > 0 ? $"&facets={facets}" : "");
@@ -635,12 +642,16 @@ public sealed class ModDownloader : IDisposable
     /// 同时覆盖 Forge 和 NeoForge 的旧包，所以 NeoForge 也传 forge 会漏掉
     /// 纯 NeoForge 的包，这里两者都带上用 OR 连。
     /// </summary>
-    private static string BuildModrinthFacets(string? mcVersion, string? loader)
+    private static string BuildModrinthFacets(string? mcVersion, string? loader, string projectType = "mod")
     {
-        var groups = new List<string> { "[\"project_type:mod\"]" };
+        var groups = new List<string> { $"[\"project_type:{projectType}\"]" };
+
+        // 加载器只对 mod / modpack 有意义。资源包、光影、数据包在 Modrinth 上
+        // 没有加载器分类，硬加 categories:fabric 会把结果清空。
+        var loaderApplies = projectType is "mod" or "modpack";
 
         var l = (loader ?? "").Trim().ToLowerInvariant();
-        if (l.Length > 0)
+        if (loaderApplies && l.Length > 0)
         {
             var names = l switch
             {
@@ -655,6 +666,20 @@ public sealed class ModDownloader : IDisposable
             groups.Add($"[\"versions:{mcVersion.Trim()}\"]");
 
         return Uri.EscapeDataString("[" + string.Join(",", groups) + "]");
+    }
+
+    /// <summary>
+    /// Modrinth 能接受的 project_type 白名单。传错会被服务端忽略（而不是报错），
+    /// 结果就是"搜出来一堆 Mod"—— 所以这里收敛到已知值，未知的退回 mod。
+    /// </summary>
+    private static string NormalizeProjectType(string? projectType)
+    {
+        var t = (projectType ?? "").Trim().ToLowerInvariant();
+        return t switch
+        {
+            "mod" or "modpack" or "resourcepack" or "shader" or "datapack" or "plugin" => t,
+            _ => "mod",
+        };
     }
 
     // ────────────────────────────────────────────────────────────

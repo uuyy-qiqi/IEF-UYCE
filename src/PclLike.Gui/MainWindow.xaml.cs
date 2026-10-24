@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -187,6 +187,11 @@ public partial class MainWindow : Window
         PageSettings.Visibility = tab == "settings" ? Visibility.Visible : Visibility.Collapsed;
         PageTools.Visibility = tab == "tools" ? Visibility.Visible : Visibility.Collapsed;
 
+        // 下载页有两屏：内置版本列表（安装包）和社区资源浏览。
+        // 这儿先都收起来，具体进哪一屏由下面 BuildNav 触发的 OnNavChanged 决定 ——
+        // 左栏第一项是"安装包 → Minecraft"，所以默认进版本列表。
+        PageContent.Visibility = Visibility.Collapsed;
+
         // 左栏在两类页里是不同的东西：
         //   启动页 —— 一张玩家卡片（皮肤头像 + 名字 + 正版状态），没有子导航；
         //   其余页 —— 子导航列表。
@@ -221,6 +226,8 @@ public partial class MainWindow : Window
     {
         SwitchSection(key);
 
+        if (_topTab == "download") ShowDownloadSection(key);
+
         if (key == "logs")
         {
             // 「查看日志」= 展开底部日志抽屉
@@ -237,6 +244,41 @@ public partial class MainWindow : Window
     /// 没匹配到 key 的时候（比如切大页签时左栏还没重建）按当前大页签
     /// 落回第一个分区，避免整页空白。
     /// </summary>
+    /// <summary>
+    /// 下载页左栏切屏。
+    ///
+    /// 左栏十三项其实归两类：
+    ///   · 安装包（Minecraft / OptiFine / Forge / …）—— 看的是内置的九百多个版本，走版本列表那一屏；
+    ///   · 社区资源（Mod / 整合包 / 数据包 / 资源包 / 光影包 / 世界 / 收藏夹）—— 走内容浏览那一屏。
+    /// 两屏各自管自己的标题、搜索栏和列表，所以这里只切可见性 + 通知 ViewModel 换栏目。
+    /// </summary>
+    private void ShowDownloadSection(string key)
+    {
+        var tab = key switch
+        {
+            "mods" => (ContentTab?)ContentTab.Mod,
+            "pack" => ContentTab.ModPack,
+            "datapack" => ContentTab.Datapack,
+            "resource" => ContentTab.ResourcePack,
+            "shader" => ContentTab.Shader,
+            "world" => ContentTab.World,
+            "fav" => ContentTab.Favorite,
+            _ => null,
+        };
+
+        if (tab is null)
+        {
+            // 安装包那一类：版本列表
+            PageContent.Visibility = Visibility.Collapsed;
+            PageDownload.Visibility = Visibility.Visible;
+            return;
+        }
+
+        PageDownload.Visibility = Visibility.Collapsed;
+        PageContent.Visibility = Visibility.Visible;
+        _vm.Content.Activate(tab.Value);
+    }
+
     private void SwitchSection(string key)
     {
         var sections = new[]
@@ -270,6 +312,20 @@ public partial class MainWindow : Window
 
         if (target is not null)
             target.Visibility = Visibility.Visible;
+
+        // 百宝箱顶上那张「目录体检」的数字得现算。第一次进来算一次就够了，
+        // 之后想让数字更新就点那张卡上的「刷新」——不然每切一次页都把几万个
+        // 文件数一遍，白烧磁盘。
+        if (ReferenceEquals(target, ToolSecBox) && !_vm.HasSurvey)
+            _vm.RefreshSurvey();
+
+        // 服务器列表是游戏自己那份 servers.dat —— 用户可能在游戏里加过服务器，
+        // 所以每次进大厅都重读一次文件。读一个小 NBT 文件，代价可以忽略。
+        if (ReferenceEquals(target, ToolSecLobby))
+        {
+            _vm.Lobby.RefreshServers();
+            _vm.Lobby.SetStatus("");
+        }
     }
 
     /// <summary>供截图探针切页用。</summary>
@@ -391,6 +447,10 @@ public partial class MainWindow : Window
         UpdateJavaUi();
         _vm.RefreshAccount();
 
+        // 实例要先读出来：启动页那张卡显示的是实例名，启动时也按它决定 --gameDir
+        _vm.RefreshInstances();
+        RefreshInstanceCard();
+
         // 启动时按配置决定外观：先日志抽屉，再默认页签
         if (_vm.Config.AutoExpandLog)
         {
@@ -426,6 +486,10 @@ public partial class MainWindow : Window
             _vm.Cancel();
             _vm.KillRunningGame();
         }
+
+        // 两个子 ViewModel 各带着一个 HttpClient 和一个 CancellationTokenSource，
+        // 关窗时把它们收掉 —— 否则下载线程会在进程退出前继续往盘上写文件。
+        _vm.DisposeChildren();
     }
 
     private void UpdateJavaUi()
@@ -487,10 +551,41 @@ public partial class MainWindow : Window
 
     private void OpenFolder_Click(object sender, RoutedEventArgs e) => _vm.OpenGameFolder();
 
-    private void InstancePick_Click(object sender, RoutedEventArgs e)
+    private void InstancePick_Click(object sender, RoutedEventArgs e) => OpenInstances();
+
+    /// <summary>实例管理窗口。关掉后刷新启动页那张「当前实例」卡。</summary>
+    private void OpenInstances()
     {
-        MessageBox.Show("实例选择面板还没做。当前启动用的就是上方选中的那个版本。",
-            "还没实现", MessageBoxButton.OK, MessageBoxImage.Information);
+        var dlg = new InstancesWindow(_vm) { Owner = this };
+        dlg.ShowDialog();
+
+        _vm.RefreshInstances();
+        RefreshInstanceCard();
+    }
+
+    /// <summary>
+    /// 给截图探针用的实例窗口。
+    ///
+    /// 实例管理是个独立对话框，不是主窗口的一页，所以每页截图那套拿不到它 ——
+    /// 单独开一个不设 Owner 的（探针里 GetWindow(this) 会返回 null，设 Owner 会在
+    /// Show() 时抛异常）。
+    /// </summary>
+    internal Window InstancesForShot() => new InstancesWindow(_vm);
+
+    /// <summary>
+    /// 把「当前实例」卡上的文字刷新一遍。
+    ///
+    /// 绑定了 InstanceLabel 的地方其实能自己更新，这里顺带把目录也写出来 ——
+    /// 用户最需要知道的就是"存档到底在哪个目录"。
+    /// </summary>
+    private void RefreshInstanceCard()
+    {
+        if (InstancePathText is null) return;
+
+        var inst = _vm.SelectedInstance;
+        InstancePathText.Text = inst is null
+            ? "还没选实例，启动时会自动用默认实例"
+            : $"{inst.IsolationLabel} · {inst.GameDir}";
     }
 
     private void InstanceSettings_Click(object sender, RoutedEventArgs e)
@@ -533,6 +628,289 @@ public partial class MainWindow : Window
     }
 
     private void ClearLog_Click(object sender, RoutedEventArgs e) => _vm.ClearLog();
+
+    // ── 奇妙小工具 → 百宝箱 ──
+
+    /// <summary>重新体检：算一遍体积 / 存档 / 截图 / 崩溃报告。</summary>
+    private void RefreshSurvey_Click(object sender, RoutedEventArgs e) => _vm.RefreshSurvey();
+
+    /// <summary>
+    /// 打开当前实例里的某个子目录（按钮的 Tag 写子目录名）。
+    ///
+    /// 目录不存在时不去创建 —— 用户点「打开截图目录」是想确认截图还在不在，
+    /// 顺手造一个空目录只会让他以为截图丢了。
+    /// </summary>
+    private void OpenTool_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not string sub) return;
+
+        var path = Path.Combine(_vm.GameDirNow(), sub);
+
+        if (!Directory.Exists(path))
+        {
+            _vm.SetToolStatus($"还没有 {sub} 目录（{path}）—— 没导出过，或者当前实例不对。");
+            return;
+        }
+
+        MainViewModel.OpenInExplorer(path);
+    }
+
+    /// <summary>存档那一行的「管理」：跳下载页的「世界」分区。</summary>
+    private void ManageWorlds_Click(object sender, RoutedEventArgs e)
+    {
+        ShowTopTab("download");
+        _navKey = "world";
+        BuildNav();
+        OnNavChanged("world");
+    }
+
+    /// <summary>用系统默认程序打开最新的那份崩溃报告。</summary>
+    private void OpenLatestCrash_Click(object sender, RoutedEventArgs e)
+    {
+        var crash = _vm.Survey?.LatestCrash;
+
+        if (crash is null)
+        {
+            _vm.SetToolStatus("没有崩溃报告。启动失败多半写在底部日志里，展开看看。");
+            return;
+        }
+
+        MainViewModel.OpenInExplorer(crash.Path);
+    }
+
+    /// <summary>
+    /// 扫一遍垃圾，把清单和体积摆给用户看，确认了才删。
+    ///
+    /// 这一屏唯一会动用户文件的操作，所以坚持两步：先 Scan 报数，
+    /// 再 Clean —— 不把"扫描"和"删除"合成一个按钮。
+    /// </summary>
+    private void CleanJunk_Click(object sender, RoutedEventArgs e)
+    {
+        var scan = _vm.ScanJunk();
+
+        if (!scan.Any)
+        {
+            _vm.SetToolStatus("没找到可清理的东西 —— 日志、崩溃报告、下载残留都很干净。");
+            return;
+        }
+
+        var preview = string.Join("\n", scan.Paths.Take(8));
+        if (scan.Count > 8) preview += $"\n…还有 {scan.Count - 8} 个";
+
+        var answer = MessageBox.Show(
+            $"可清理 {scan.Count} 个文件，共 {scan.SizeText}：\n\n{preview}\n\n" +
+            "存档、Mod、配置、版本文件一概不动。要继续吗？",
+            "清理垃圾", MessageBoxButton.OKCancel, MessageBoxImage.Question);
+
+        if (answer != MessageBoxResult.OK) return;
+
+        var result = _vm.CleanJunk(scan);
+
+        _vm.SetToolStatus(result.Failed == 0
+            ? $"清理完成：删掉 {result.Deleted} 个文件，腾出 {result.SizeText}。"
+            : $"删掉 {result.Deleted} 个，{result.Failed} 个被占用没删成（游戏正开着的时候常见）。");
+    }
+
+    /// <summary>
+    /// 复制最近一次真正执行过的启动命令。
+    ///
+    /// 取启动日志的首行原文，不按当前配置重新拼一遍 —— 重拼会漏掉规则裁剪、
+    /// natives 解压路径这些细节，贴出去是错的，反而更难排查。
+    /// </summary>
+    private void CopyLaunchCommand_Click(object sender, RoutedEventArgs e)
+    {
+        var cmd = _vm.LastLaunchCommand();
+
+        if (string.IsNullOrWhiteSpace(cmd))
+        {
+            _vm.SetToolStatus("还没启动过，没有命令可复制。先启动一次游戏。");
+            return;
+        }
+
+        CopyText(cmd, $"已复制启动命令（{cmd.Length} 个字符）。");
+    }
+
+    /// <summary>复制一份拼好的诊断信息，求助时可以直接贴。</summary>
+    private void CopyDiagnostics_Click(object sender, RoutedEventArgs e)
+    {
+        var text = _vm.BuildDiagnostics();
+        CopyText(text, $"已复制诊断信息（{text.Length} 个字符）。");
+    }
+
+    /// <summary>复制到剪贴板。剪贴板偶尔会被别的程序占着，所以吃掉失败只记日志。</summary>
+    private void CopyText(string text, string okMessage)
+    {
+        try
+        {
+            Clipboard.SetText(text);
+            _vm.SetToolStatus(okMessage);
+            _vm.AppendLog(LogKind.Info, okMessage);
+        }
+        catch (Exception ex)
+        {
+            _vm.SetToolStatus($"复制失败：{ex.Message}");
+        }
+    }
+
+    // ── 下载 → 社区资源 ──
+
+    private async void ContentSearch_Click(object sender, RoutedEventArgs e)
+        => await _vm.Content.SearchAsync();
+
+    private async void ContentInstall_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not ContentRow row) return;
+
+        await _vm.Content.InstallAsync(row);
+    }
+
+    private void ContentFav_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not ContentRow row) return;
+
+        _vm.Content.ToggleFavorite(row);
+    }
+
+    private async void WorldImport_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "选一个存档压缩包",
+            Filter = "存档压缩包|*.zip|所有文件|*.*",
+            CheckFileExists = true,
+        };
+
+        if (dlg.ShowDialog(this) != true) return;
+
+        await _vm.Content.ImportWorldAsync(dlg.FileName);
+    }
+
+    private async void WorldExport_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not PclLike.Core.Content.WorldInfo world) return;
+
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = $"把「{world.Name}」导出成 zip",
+            Filter = "存档压缩包|*.zip",
+            FileName = world.Name + ".zip",
+            DefaultExt = ".zip",
+        };
+
+        if (dlg.ShowDialog(this) != true) return;
+
+        await _vm.Content.ExportWorldAsync(world.Name, dlg.FileName);
+    }
+
+    private void WorldDelete_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not PclLike.Core.Content.WorldInfo world) return;
+
+        var answer = MessageBox.Show(
+            this,
+            $"删掉世界「{world.Name}」（{world.SizeText}）？\n\n" +
+            "存档文件会被直接删除，不进回收站，删了找不回来。\n" +
+            "还没备份过的话，先用【导出 zip】存一份再删。",
+            "删除世界", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+
+        if (answer != MessageBoxResult.OK) return;
+
+        _vm.Content.DeleteWorld(world.Name);
+    }
+
+    private void WorldOpen_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not PclLike.Core.Content.WorldInfo world) return;
+
+        MainViewModel.OpenInExplorer(world.Path);
+    }
+
+    private void OpenContentFolder_Click(object sender, RoutedEventArgs e)
+        => MainViewModel.OpenInExplorer(_vm.Content.ContentDirForTab());
+
+    // ── 工具 → 大厅 ──
+
+    /// <summary>
+    /// 扫局域网。这是个 5 秒的操作，界面上得看得见"正在扫描"——
+    /// 所以按钮文字会变、按钮自己会禁用（IsScanning 反向绑定）。
+    /// </summary>
+    private async void ScanLan_Click(object sender, RoutedEventArgs e)
+        => await _vm.Lobby.ScanLanAsync();
+
+    /// <summary>把扫到的世界写进服务器列表。行数据在按钮的 Tag 上。</summary>
+    private void AddLanWorld_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not LanRow row) return;
+
+        _vm.Lobby.AddWorldToServers(row);
+    }
+
+    private void JoinLobby_Click(object sender, RoutedEventArgs e) => _vm.Lobby.Join();
+
+    private void ClearLobbyCode_Click(object sender, RoutedEventArgs e)
+    {
+        _vm.Lobby.JoinCode = "";
+        _vm.Lobby.SetStatus("已清空输入。");
+    }
+
+    private void PasteLobbyCode_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            _vm.Lobby.JoinCode = Clipboard.GetText().Trim();
+            _vm.Lobby.SetStatus("已从剪贴板粘贴，看一眼下面的解析结果对不对再点【加入】。");
+        }
+        catch (Exception ex)
+        {
+            _vm.Lobby.SetStatus($"读剪贴板失败：{ex.Message}");
+        }
+    }
+
+    private void RefreshLocalIp_Click(object sender, RoutedEventArgs e)
+        => _vm.Lobby.RefreshLocalAddresses();
+
+    private void CreateLobbyCode_Click(object sender, RoutedEventArgs e)
+        => _vm.Lobby.CreateCode();
+
+    private void CopyCreatedCode_Click(object sender, RoutedEventArgs e)
+        => CopyLobbyText(_vm.Lobby.CreatedCode, "编号已复制。");
+
+    private void CopyCreatedAddress_Click(object sender, RoutedEventArgs e)
+        => CopyLobbyText($"{_vm.Lobby.SelectedAddress}:{_vm.Lobby.PortText.Trim()}", "地址已复制。");
+
+    private void RefreshServers_Click(object sender, RoutedEventArgs e)
+    {
+        _vm.Lobby.RefreshServers();
+        _vm.Lobby.SetStatus($"服务器列表已重读，共 {_vm.Lobby.Servers.Count} 条。");
+    }
+
+    private void RemoveServer_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not PclLike.Core.Online.ServerEntry entry) return;
+
+        _vm.Lobby.RemoveServer(entry);
+    }
+
+    /// <summary>大厅专用的复制：状态写在那一屏自己的状态条上，不借用百宝箱的。</summary>
+    private void CopyLobbyText(string text, string okMessage)
+    {
+        if (text.Length == 0)
+        {
+            _vm.Lobby.SetStatus("没有可复制的内容。");
+            return;
+        }
+
+        try
+        {
+            Clipboard.SetText(text);
+            _vm.Lobby.SetStatus(okMessage);
+            _vm.AppendLog(LogKind.Info, okMessage);
+        }
+        catch (Exception ex)
+        {
+            _vm.Lobby.SetStatus($"复制失败：{ex.Message}");
+        }
+    }
 
     // ── 设置 → Java ──
 
@@ -606,9 +984,9 @@ public partial class MainWindow : Window
     /// <summary>
     /// 打开 Mod 管理窗口。
     ///
-    /// 窗口按当前选中的版本建临时实例 —— 主界面还停留在"选版本"阶段，
-    /// 没有显式的实例概念，但 mods 目录必须在某个 GameDir 下，
-    /// 所以按版本 id 现取/现建一个实例来定位。
+    /// 必须走和启动完全同一条实例定位逻辑 —— 否则会出现"Mod 是装上了，
+    /// 启动却不生效"：Mod 管理落在 A 实例的 mods 目录，游戏按 B 实例启动。
+    /// 以前这里按版本 id 另建过一个实例，就是这么错的。
     /// </summary>
     private void Mods_Click(object sender, RoutedEventArgs e)
     {
@@ -620,9 +998,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var store = new PclLike.Core.Storage.InstanceStore(App.GameRoot);
-        var instance = store.Load(versionId) ?? store.Create(versionId, versionId);
-
+        var instance = _vm.InstanceForLaunch(versionId);
         var dlg = new ModsWindow(instance) { Owner = this };
         dlg.ShowDialog();
     }

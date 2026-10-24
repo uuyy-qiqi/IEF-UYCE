@@ -27,7 +27,7 @@ internal static class WindowShot
         // 悄悄改变另一个参数的含义（曾经把 "--settle" 当成了页面名）。
         var outPath = args.Length > 1 ? args[1] : "window.png";
 
-        var known = new[] { "launch", "download", "settings", "tools" };
+        var known = new[] { "launch", "download", "settings", "tools", "instances" };
 
         var page = args.Skip(1).FirstOrDefault(a => known.Contains(a));
 
@@ -63,19 +63,30 @@ internal static class WindowShot
         //
         // 平时截"静态长什么样"不用等；但要验收"版本清单拉回来之后长什么样"，
         // 必须给异步加载留时间，否则截到的永远是加载中的空壳。
+        //
+        // 注意顺序：等的时间必须花在【切页/切分区之后】。社区资源那一屏的
+        // 搜索是切进那一栏才开始发请求的 —— 先在启动页上干等 30 秒再切过去
+        // 立刻截，截到的永远是"正在处理…"。所以这里先只给一小段首屏时间，
+        // 真正的等待放在导航后面。
         var settleIdx = Array.FindIndex(args, a =>
             a.Equals("--settle", StringComparison.OrdinalIgnoreCase));
 
-        if (settleIdx >= 0 && settleIdx + 1 < args.Length
-            && double.TryParse(args[settleIdx + 1], out var settleSec))
+        var settleSec = 0.0;
+
+        if (settleIdx >= 0 && settleIdx + 1 < args.Length)
+            double.TryParse(args[settleIdx + 1], out settleSec);
+
+        void PumpFor(double seconds)
         {
-            var deadline = DateTime.UtcNow.AddSeconds(settleSec);
+            var deadline = DateTime.UtcNow.AddSeconds(seconds);
             while (DateTime.UtcNow < deadline)
             {
                 Pump();
                 System.Threading.Thread.Sleep(100);
             }
         }
+
+        PumpFor(Math.Min(settleSec, 3));
 
         if (!string.IsNullOrEmpty(page))
         {
@@ -85,7 +96,7 @@ internal static class WindowShot
             Pump();
         }
 
-        // --section <key>：切到设置页/工具页里的某个分区（set-java / toolbox ...）
+        // --section <key>：切到设置页/工具页里的某个分区（set-java / toolbox / mods ...）
         var secIdx = Array.FindIndex(args, a =>
             a.Equals("--section", StringComparison.OrdinalIgnoreCase));
 
@@ -97,12 +108,34 @@ internal static class WindowShot
             Pump();
         }
 
-        var srcW = (int)Math.Ceiling(win.ActualWidth);
-        var srcH = (int)Math.Ceiling(win.ActualHeight);
+        // 导航都做完了，现在才真正等数据
+        PumpFor(settleSec);
+
+        // 实例管理是个独立窗口（对话框），不是主窗口的一页，
+        // 所以要单独开一个来截。
+        Window shotTarget = win;
+
+        if (page == "instances")
+        {
+            var dlg = win.InstancesForShot();
+            dlg.Width = w;
+            dlg.Height = h;
+            dlg.WindowStartupLocation = WindowStartupLocation.Manual;
+            dlg.Left = -10000;
+            dlg.Top = -10000;
+            dlg.ShowInTaskbar = false;
+            dlg.Show();
+            dlg.UpdateLayout();
+            Pump();
+            shotTarget = dlg;
+        }
+
+        var srcW = (int)Math.Ceiling(shotTarget.ActualWidth);
+        var srcH = (int)Math.Ceiling(shotTarget.ActualHeight);
         if (srcW <= 0 || srcH <= 0) { srcW = (int)w; srcH = (int)h; }
 
         var rtb = new RenderTargetBitmap(srcW, srcH, 96, 96, PixelFormats.Pbgra32);
-        rtb.Render(win);
+        rtb.Render(shotTarget);
 
         var enc = new PngBitmapEncoder();
         enc.Frames.Add(BitmapFrame.Create(rtb));
@@ -113,6 +146,7 @@ internal static class WindowShot
         using (var fs = File.Create(outPath)) enc.Save(fs);
 
         Console.WriteLine($"已写出 {outPath} ({srcW}x{srcH}) page={page ?? "(default)"}");
+        if (!ReferenceEquals(shotTarget, win)) shotTarget.Close();
         win.Close();
         return 0;
     }

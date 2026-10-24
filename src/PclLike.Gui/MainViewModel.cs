@@ -32,10 +32,12 @@ public sealed class MainViewModel : ObservableObject
         _service = new LaunchService(gameRoot);
         Config = ConfigStore.Load(gameRoot);
         Accounts = new PclLike.Core.Login.AccountManager(gameRoot);
+        Store = new PclLike.Core.Storage.InstanceStore(gameRoot);
 
         LogLines = new ObservableCollection<LogLine>();
         Versions = new ObservableCollection<VersionItem>();
         JavaList = new ObservableCollection<JavaLocator.JavaInfo>();
+        Instances = new ObservableCollection<PclLike.Core.Storage.GameInstance>();
 
         VersionsView = CollectionViewSource.GetDefaultView(Versions);
         VersionsView.Filter = FilterVersion;
@@ -693,8 +695,415 @@ public sealed class MainViewModel : ObservableObject
         AppendLog(LogKind.Info, $"探测到 {JavaList.Count} 个 Java：{string.Join("、", JavaList.Select(j => $"Java {j.MajorVersion}"))}");
     }
 
+    // ─────────────────── 实例 ───────────────────
+    //
+    // 实例决定 --gameDir 指到哪儿，也就是存档 / Mod / 设置落在哪儿。
+    // 界面上只有"当前实例"这一个概念：选了它，启动就按它来。
+
+    /// <summary>实例仓库（&lt;root&gt;/instances/&lt;id&gt;/instance.json）。</summary>
+    public PclLike.Core.Storage.InstanceStore Store { get; }
+
+    /// <summary>全部实例，按最近玩过的排前面。</summary>
+    public ObservableCollection<PclLike.Core.Storage.GameInstance> Instances { get; }
+
+    private PclLike.Core.Storage.GameInstance? _selectedInstance;
+
+    /// <summary>当前启动用的实例。null = 还没选，启动时按当前版本自动拿默认实例。</summary>
+    public PclLike.Core.Storage.GameInstance? SelectedInstance
+    {
+        get => _selectedInstance;
+        set
+        {
+            if (ReferenceEquals(_selectedInstance, value)) return;
+            _selectedInstance = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(InstanceLabel));
+            OnPropertyChanged(nameof(InstanceIsolationLabel));
+        }
+    }
+
+    /// <summary>启动页「当前实例」卡上的名字。</summary>
+    public string InstanceLabel => SelectedInstance is null ? "未选择实例" : SelectedInstance.Name;
+
+    /// <summary>独立 / 共享。界面上要显示，因为它决定存档在哪儿。</summary>
+    public string InstanceIsolationLabel => SelectedInstance?.IsolationLabel ?? "共享";
+
+    /// <summary>重新读盘，尽量保持当前选中项。</summary>
+    public void RefreshInstances()
+    {
+        var keep = _selectedInstance?.Id;
+
+        Instances.Clear();
+        foreach (var i in Store.LoadAll()) Instances.Add(i);
+
+        _selectedInstance = Instances.FirstOrDefault(i => i.Id == keep)
+                            ?? Instances.FirstOrDefault(i => i.VersionId == SelectedVersion?.Id)
+                            ?? Instances.FirstOrDefault();
+
+        OnPropertyChanged(nameof(SelectedInstance));
+        OnPropertyChanged(nameof(InstanceLabel));
+        OnPropertyChanged(nameof(InstanceIsolationLabel));
+    }
+
+    /// <summary>给某个版本建一个独立实例并选中它。</summary>
+    public PclLike.Core.Storage.GameInstance? CreateInstance(string name, string? versionId = null,
+                                                             bool isolated = true)
+    {
+        var vid = string.IsNullOrWhiteSpace(versionId) ? SelectedVersion?.Id : versionId;
+        if (string.IsNullOrWhiteSpace(vid))
+        {
+            AppendLog(LogKind.Warning, "先选一个游戏版本 —— 实例是挂在具体版本上的");
+            return null;
+        }
+
+        var inst = Store.Create(name, vid, isolated);
+        inst.Loader = GuessLoader(vid);
+        Store.Save(inst);
+
+        RefreshInstances();
+        SelectedInstance = Instances.FirstOrDefault(i => i.Id == inst.Id) ?? inst;
+
+        AppendLog(LogKind.Ok, $"已新建实例「{inst.Name}」→ {vid}（{inst.IsolationLabel}）");
+        return inst;
+    }
+
+    /// <summary>从版本 id 猜加载器，只用于界面显示和 Mod 提示。</summary>
+    public static string GuessLoader(string versionId)
+    {
+        var v = versionId.ToLowerInvariant();
+        if (v.Contains("neoforge")) return "neoforge";
+        if (v.Contains("forge")) return "forge";
+        if (v.Contains("quilt")) return "quilt";
+        if (v.Contains("fabric")) return "fabric";
+        return "vanilla";
+    }
+
+    /// <summary>复制实例（连游戏文件一起）。</summary>
+    public PclLike.Core.Storage.GameInstance? CopyInstance(PclLike.Core.Storage.GameInstance inst,
+                                                          string? newName = null)
+    {
+        try
+        {
+            var copy = Store.Copy(inst.Id, newName);
+            RefreshInstances();
+            SelectedInstance = Instances.FirstOrDefault(i => i.Id == copy.Id) ?? copy;
+
+            AppendLog(LogKind.Ok, $"已复制为「{copy.Name}」");
+            return copy;
+        }
+        catch (Exception ex)
+        {
+            AppendLog(LogKind.Error, $"复制实例失败：{ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>删除实例。<paramref name="deleteFiles"/> 决定游戏文件是否一起删。</summary>
+    public bool DeleteInstance(PclLike.Core.Storage.GameInstance inst, bool deleteFiles)
+    {
+        if (!Store.Delete(inst.Id, deleteFiles))
+        {
+            AppendLog(LogKind.Error, $"删除实例「{inst.Name}」失败 —— 文件可能正被别的程序占着");
+            return false;
+        }
+
+        AppendLog(LogKind.Info, deleteFiles
+            ? $"已删除实例「{inst.Name}」及其文件"
+            : $"已删除实例「{inst.Name}」（游戏文件保留在磁盘上）");
+
+        if (_selectedInstance?.Id == inst.Id) _selectedInstance = null;
+        RefreshInstances();
+        return true;
+    }
+
     /// <summary>
-    /// 当前会用的那个 Java。设置页的列表可以改它，改完写进配置，
+    /// 给界面用的门面：Mod 管理、实例设置这些窗口都得跟启动落在同一个实例上。
+    /// 各写各的定位逻辑，迟早会错开（Mod 装到 A、游戏按 B 启动）。
+    /// </summary>
+    internal PclLike.Core.Storage.GameInstance InstanceForLaunch(string versionId)
+        => EnsureInstanceForLaunch(versionId);
+
+    /// <summary>
+    /// 启动前确定用哪个实例。
+    ///
+    /// 没选过就落到"默认实例"——它是共享目录（Isolated = false），跟原版行为一致。
+    /// 这里不能悄悄给用户造一个隔离实例：那样他原来的存档、Mod、设置会像凭空消失
+    /// 一样，而事实上只是 gameDir 换地方了。
+    /// </summary>
+    private PclLike.Core.Storage.GameInstance EnsureInstanceForLaunch(string versionId)
+    {
+        var inst = _selectedInstance ?? Store.EnsureDefault(versionId);
+
+        // 实例挂的版本要跟当前选的版本一致，否则等于用 A 的目录跑 B
+        if (inst.VersionId != versionId)
+        {
+            AppendLog(LogKind.Info, $"实例「{inst.Name}」的版本从 {inst.VersionId} 改为 {versionId}");
+            inst.VersionId = versionId;
+        }
+
+        inst.Loader = GuessLoader(versionId);
+        inst.LastPlayedAt = DateTimeOffset.Now;
+        Store.Save(inst);
+
+        RefreshInstances();
+        return inst;
+    }
+
+    // ─────────────────── 联机 ───────────────────
+
+    private LobbyViewModel? _lobby;
+
+    /// <summary>
+    /// 联机大厅那一屏。
+    ///
+    /// 延迟创建是必须的：它一造出来就要读当前实例的 servers.dat，而"当前实例"
+    /// 得等配置和实例列表加载完才准 —— 而字段初始化跑在构造函数体之前。
+    /// </summary>
+    public LobbyViewModel Lobby => _lobby ??= new LobbyViewModel(GameDirNow, AppendLog);
+
+    // ─────────────────── 社区资源（下载页） ───────────────────
+
+    private ContentViewModel? _content;
+
+    /// <summary>下载页「社区资源」那一屏。同样是延迟创建（要读实例列表）。</summary>
+    public ContentViewModel Content => _content ??= new ContentViewModel(CurrentInstance, AppendLog, GameRoot);
+
+    /// <summary>
+    /// 当前实例，**只读**。
+    ///
+    /// 和 <see cref="EnsureInstanceForLaunch"/> 的区别很关键：那个每次调用都会
+    /// 改 LastPlayedAt 并 Store.Save 一次。社区资源那一屏到处都要读实例
+    /// （刷新存档列表、查加载器、显示实例名），用那个等于每点一下就写一次盘。
+    /// 这里只读不写。
+    /// </summary>
+    public PclLike.Core.Storage.GameInstance CurrentInstance()
+        => _selectedInstance
+           ?? Store.EnsureDefault(SelectedVersion?.Id ?? Versions.FirstOrDefault()?.Id ?? "");
+
+    /// <summary>关窗口时把两个带网络连接的子 VM 收掉。没创建过就不创建。</summary>
+    public void DisposeChildren()
+    {
+        _content?.Dispose();
+        _lobby?.Dispose();
+    }
+
+    // ─────────────────── 百宝箱 ───────────────────
+    //
+    // 这一屏的每个工具都守同一条规矩：要么只读（打开目录、复制一段文本），
+    // 要么在动手之前把要删的东西数清楚给用户看。不做"静默优化" ——
+    // 用户点一下然后发现自己几十小时的存档没了，是启动器能犯的最严重的错。
+
+    private PclLike.Core.Diagnostics.GameDirSurvey? _survey;
+    private string _toolStatus = "";
+
+    /// <summary>上一次工具动作的结果。没动作时是空的，界面不显示那一行。</summary>
+    public string ToolStatus
+    {
+        get => _toolStatus;
+        private set { _toolStatus = value; OnPropertyChanged(); }
+    }
+
+    public bool HasToolStatus => _toolStatus.Length > 0;
+
+    public bool HasSurvey => _survey is not null;
+
+    /// <summary>
+    /// 当前体检结果。暴露出来是给「打开最新崩溃报告」用的 —— 它要拿
+    /// LatestCrash 的完整路径，而那个路径不适合拼成一个字符串属性传给界面。
+    /// </summary>
+    public PclLike.Core.Diagnostics.GameDirSurvey? Survey => _survey;
+
+    /// <summary>体检覆盖的目录（当前实例的 GameDir）。</summary>
+    public string ToolDirLabel => _survey?.GameDir ?? GameDirNow();
+
+    public string ToolTotalText => _survey?.TotalText ?? "—";
+
+    /// <summary>例如「1.8 GB · 12 个存档 · 3 张截图」。</summary>
+    public string ToolSummaryText => _survey?.SummaryText ?? "点「刷新」统计一下这个实例占了多大";
+
+    public string ToolWorldText => _survey?.WorldText ?? "—";
+
+    public string ToolScreenshotText => _survey?.ScreenshotText ?? "—";
+
+    public string ToolCrashText => _survey?.CrashText ?? "—";
+
+    /// <summary>各子目录占用。界面按体积倒序显示，让用户先看到最占地的那块。</summary>
+    public IReadOnlyList<PclLike.Core.Diagnostics.DirUsage> ToolUsages =>
+        _survey is null
+            ? []
+            : _survey.Usages.OrderByDescending(u => u.Bytes).ToList();
+
+    /// <summary>当前实例的 GameDir；没选实例就退回共享的启动器根目录。</summary>
+    public string GameDirNow() => SelectedInstance?.GameDir ?? GameRoot;
+
+    private bool _surveyBusy;
+
+    /// <summary>
+    /// 重算体检。切到百宝箱、换实例、手动刷新都调它。
+    ///
+    /// 放后台线程算：共享实例的 GameDir 就是启动器根目录，底下躺着 assets 和
+    /// libraries —— 几万个文件全走一遍要好几秒，在 UI 线程上同步算会把界面冻住。
+    /// <paramref name="announce"/> 为 false 时只静默更新数字（清理完重算用），
+    /// 不覆盖用户刚看到的操作结果。
+    /// </summary>
+    public void RefreshSurvey(bool announce = true)
+    {
+        if (_surveyBusy) return;
+
+        var dir = GameDirNow();
+        _surveyBusy = true;
+
+        if (announce) SetToolStatus("正在统计目录体积…");
+
+        _ = Task.Run(() =>
+        {
+            var survey = PclLike.Core.Diagnostics.GameDirSurveyor.Take(dir);
+
+            var app = Application.Current;
+            if (app is not null && !app.Dispatcher.CheckAccess())
+            {
+                app.Dispatcher.BeginInvoke(() => ApplySurvey(survey, announce));
+                return;
+            }
+
+            ApplySurvey(survey, announce);
+        });
+    }
+
+    private void ApplySurvey(PclLike.Core.Diagnostics.GameDirSurvey survey, bool announce)
+    {
+        _survey = survey;
+        _surveyBusy = false;
+
+        OnPropertyChanged(nameof(HasSurvey));
+        OnPropertyChanged(nameof(Survey));
+        OnPropertyChanged(nameof(ToolDirLabel));
+        OnPropertyChanged(nameof(ToolTotalText));
+        OnPropertyChanged(nameof(ToolSummaryText));
+        OnPropertyChanged(nameof(ToolWorldText));
+        OnPropertyChanged(nameof(ToolScreenshotText));
+        OnPropertyChanged(nameof(ToolCrashText));
+        OnPropertyChanged(nameof(ToolUsages));
+
+        if (announce) SetToolStatus($"统计完成：{survey.SummaryText}");
+    }
+
+    public void SetToolStatus(string text)
+    {
+        ToolStatus = text;
+        OnPropertyChanged(nameof(HasToolStatus));
+    }
+
+    /// <summary>扫一遍可清理项。**只扫不删** —— 删的动作由界面确认后再走 <see cref="CleanJunk"/>。</summary>
+    public PclLike.Core.Diagnostics.JunkScan ScanJunk()
+        => PclLike.Core.Diagnostics.JunkCleaner.Scan(GameDirNow());
+
+    public PclLike.Core.Diagnostics.JunkCleanResult CleanJunk(PclLike.Core.Diagnostics.JunkScan scan)
+    {
+        var r = PclLike.Core.Diagnostics.JunkCleaner.Clean(scan);
+
+        var msg = r.Deleted == 0
+            ? "没有删掉任何文件"
+            : $"已清理 {r.Deleted} 个文件，释放 {r.SizeText}"
+              + (r.Failed > 0 ? $"；{r.Failed} 个删不掉（多半被占用）" : "");
+
+        SetToolStatus(msg);
+        AppendLog(LogKind.Ok, msg);
+
+        // 体积变了，静默重算一次让用户看到效果 —— 不 announce，
+        // 免得"统计完成"把刚写上去的清理结果顶掉
+        RefreshSurvey(announce: false);
+        return r;
+    }
+
+    /// <summary>
+    /// 最近一次真实启动用的命令行。
+    ///
+    /// 从 &lt;gameDir&gt;/logs/launch-*.log 的**首行**读，不在这里重新拼一遍 ——
+    /// 重拼就会和实际执行的那条命令分叉（规则裁剪、参数顺序、natives 路径都可能
+    /// 不一样），那样复制给用户的"启动命令"就是编的。日志里的那行是发动机真跑的。
+    /// </summary>
+    public string? LastLaunchCommand()
+    {
+        var logs = Path.Combine(GameDirNow(), "logs");
+        if (!Directory.Exists(logs)) return null;
+
+        FileInfo? newest;
+        try
+        {
+            newest = new DirectoryInfo(logs).GetFiles("launch-*.log")
+                .OrderByDescending(f => f.LastWriteTimeUtc)
+                .FirstOrDefault();
+        }
+        catch { return null; }
+
+        if (newest is null) return null;
+
+        try
+        {
+            // 启动器自己写的这个文件是以 FileShare.Read 打开的，所以游戏还在跑时也能读
+            var first = File.ReadLines(newest.FullName).FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(first)) return null;
+            return first.TrimStart('#', ' ').Trim();
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// 拼一份能贴给别人看的诊断信息。全是只读采集：环境 + 目录体积 + 日志尾巴。
+    ///
+    /// 存在的意义是"我游戏崩了，帮我看看"这类求助 —— 与其来回问十轮，
+    /// 不如让用户一次复制走。
+    /// </summary>
+    public string BuildDiagnostics()
+    {
+        var survey = _survey ?? PclLike.Core.Diagnostics.GameDirSurveyor.Take(GameDirNow());
+        var inst = SelectedInstance;
+        var java = SelectedJava;
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("=== PclLike 诊断信息 ===");
+        sb.AppendLine($"时间        : {DateTime.Now:yyyy/MM/dd HH:mm:ss}");
+        sb.AppendLine($"启动器版本  : {typeof(MainViewModel).Assembly.GetName().Version}");
+        sb.AppendLine($"游戏根目录  : {GameRoot}");
+        sb.AppendLine($"当前实例    : {(inst is null ? "未选择" : $"{inst.Name}（{inst.IsolationLabel}）")}");
+        sb.AppendLine($"实例目录    : {GameDirNow()}");
+        sb.AppendLine($"游戏版本    : {SelectedVersion?.Id ?? "未选择"}");
+        sb.AppendLine($"加载器      : {(string.IsNullOrWhiteSpace(inst?.Loader) ? "原版" : inst!.Loader)}");
+        sb.AppendLine($"Java        : {(java is null ? "未探测到" : $"Java {java.MajorVersion} · {java.Vendor}")}");
+        sb.AppendLine($"Java 路径   : {(java?.Path ?? Config.JavaPath ?? "—")}");
+        sb.AppendLine($"最大内存    : {Config.MaxMemoryMb} MB");
+        sb.AppendLine($"目录占用    : {survey.TotalText}");
+        sb.AppendLine($"存档 / 截图 : {survey.WorldText} · {survey.ScreenshotText}");
+        sb.AppendLine($"最近崩溃    : {survey.CrashText}");
+        sb.AppendLine();
+        sb.AppendLine("--- 目录明细 ---");
+        foreach (var u in survey.Usages.OrderByDescending(u => u.Bytes))
+            sb.AppendLine($"{(u.Label + ":").PadRight(16)}{u.DisplayText}");
+        sb.AppendLine();
+        sb.AppendLine("--- 启动器日志（尾部 25 行） ---");
+        foreach (var l in LogLines.TakeLast(25))
+            sb.AppendLine($"[{l.Time:HH:mm:ss}] {l.Text}");
+
+        return sb.ToString();
+    }
+
+    /// <summary>百宝箱里那一堆目录按钮统一走这里。</summary>
+    public static void OpenInExplorer(string path)
+    {
+        try
+        {
+            if (!Directory.Exists(path)) Directory.CreateDirectory(path);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = path,
+                UseShellExecute = true,
+            });
+        }
+        catch { }
+    }
+
+    /// <summary>当前会用的那个 Java。设置页的列表可以改它，改完写进配置，
     /// 之后实际启动时 <see cref="LaunchService"/> 会优先用这个路径。
     ///
     /// 没手动选过就按 <see cref="JavaLocator.Discover"/> 的排序取第一个
@@ -936,10 +1345,16 @@ public sealed class MainViewModel : ObservableObject
                 IsProgressIndeterminate = p.Total <= 1;
             });
 
+            // 实例决定 --gameDir 落在哪儿。没选过会落到共享目录的"默认实例"，
+            // 这样老用户的存档不会因为这次改动而"消失"。
+            var instance = EnsureInstanceForLaunch(id);
+            AppendLog(LogKind.Info, $"实例：{instance.Name}（{instance.IsolationLabel}）→ {instance.GameDir}");
+
             // 版本 JSON 里没写 javaVersion 的老版本按 8 处理，和 Core 保持一致
             var options = new LaunchService.LaunchOptions
             {
                 VersionId = id,
+                Instance = instance,
                 Username = profile.Name,
                 Uuid = profile.Uuid,
                 AccessToken = profile.AccessToken,

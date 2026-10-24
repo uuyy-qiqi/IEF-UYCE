@@ -288,8 +288,13 @@
             <!-- 当前实例 -->
             <Border Style="{StaticResource Card}">
               <StackPanel>
-                <TextBlock Text="当前实例" FontSize="14" FontWeight="SemiBold"
-                           Foreground="{StaticResource TextBrush}" Margin="0,0,0,13"/>
+                <Grid Margin="0,0,0,13">
+                  <TextBlock Text="当前实例" FontSize="14" FontWeight="SemiBold"
+                             Foreground="{StaticResource TextBrush}" VerticalAlignment="Center"/>
+                  <Button Content="管理实例" Style="{StaticResource FlatButton}" Padding="12,6"
+                          HorizontalAlignment="Right" VerticalAlignment="Center"
+                          Click="InstancePick_Click"/>
+                </Grid>
 
                 <Grid>
                   <Grid.ColumnDefinitions>
@@ -302,11 +307,14 @@
                                     Margin="0,0,14,0" VerticalAlignment="Center"/>
 
                   <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding SelectedVersion.Id}" FontSize="15.5"
+                    <TextBlock Text="{Binding InstanceLabel}" FontSize="15.5"
                                FontWeight="SemiBold" Foreground="{StaticResource TextBrush}"
                                TextTrimming="CharacterEllipsis"/>
                     <TextBlock Text="{Binding SelectedVersionLabel}" FontSize="11.5"
                                Foreground="{StaticResource TextMutedBrush}" Margin="0,3,0,0"/>
+                    <TextBlock x:Name="InstancePathText" FontSize="11"
+                               Foreground="{StaticResource TextMutedBrush}" Margin="0,3,0,0"
+                               TextTrimming="CharacterEllipsis"/>
                   </StackPanel>
                 </Grid>
 
@@ -492,6 +500,185 @@
                     HorizontalAlignment="Left" Margin="0,4,0,0"/>
           </StackPanel>
         </ScrollViewer>
+
+        <!-- ════ 社区资源 ════
+             下载页左栏那七项（Mod/整合包/数据包/资源包/光影包/世界/收藏夹）
+             共用这一屏，靠左栏导航切栏目。 -->
+        <Grid x:Name="PageContent" Visibility="Collapsed" DataContext="{Binding Content}">
+          <Grid.Resources>
+            <!-- 搜索结果和收藏项共用这一个行模板：它们都变成 ContentRow -->
+            <DataTemplate x:Key="ContentRowTpl">
+              <Border Style="{StaticResource CardRow}" Margin="0,0,0,6">
+                <Grid>
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                  </Grid.ColumnDefinitions>
+
+                  <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                    <StackPanel Orientation="Horizontal">
+                      <TextBlock Text="{Binding Title}" FontSize="13.5" FontWeight="SemiBold"
+                                 Foreground="{StaticResource TextBrush}" TextTrimming="CharacterEllipsis"/>
+                      <Border Background="{StaticResource SelectedBrush}" CornerRadius="3"
+                              Padding="6,1,6,2" Margin="8,1,0,0" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding TypeText}" FontSize="10.5"
+                                   Foreground="{StaticResource PrimaryLoBrush}"/>
+                      </Border>
+                    </StackPanel>
+                    <TextBlock Text="{Binding SubtitleText}" FontSize="11.5" TextWrapping="Wrap"
+                               Foreground="{StaticResource TextMutedBrush}" Margin="0,4,0,0"/>
+                    <TextBlock Text="{Binding LoadersText}" FontSize="11"
+                               Foreground="{StaticResource TextMutedBrush}" Margin="0,2,0,0"
+                               Visibility="{Binding HasLoaderText, Converter={StaticResource BoolVis}}"/>
+                  </StackPanel>
+
+                  <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="{Binding FavoriteButtonText}" Style="{StaticResource FlatButton}"
+                            Padding="12,5" MinWidth="60" Tag="{Binding}" Click="ContentFav_Click"/>
+                    <Button Content="安装" Style="{StaticResource PrimaryButton}"
+                            Padding="16,5" MinWidth="60" Margin="8,0,0,0"
+                            Tag="{Binding}" Click="ContentInstall_Click"/>
+                  </StackPanel>
+                </Grid>
+              </Border>
+            </DataTemplate>
+
+            <!-- 世界列表的一行 -->
+            <DataTemplate x:Key="WorldRowTpl">
+              <Border Style="{StaticResource CardRow}" Margin="0,0,0,6">
+                <Grid>
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                  </Grid.ColumnDefinitions>
+
+                  <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                    <TextBlock Text="{Binding Name}" FontSize="13.5" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextBrush}"/>
+                    <TextBlock FontSize="11.5" Foreground="{StaticResource TextMutedBrush}" Margin="0,4,0,0">
+                      <Run Text="{Binding SizeText}"/>
+                      <Run Text="　·　"/>
+                      <Run Text="{Binding LastWriteText}"/>
+                    </TextBlock>
+                    <TextBlock Text="{Binding Path}" FontSize="11" TextTrimming="CharacterEllipsis"
+                               Foreground="{StaticResource TextMutedBrush}" Margin="0,2,0,0"/>
+                  </StackPanel>
+
+                  <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="打开目录" Style="{StaticResource FlatButton}" Padding="12,5"
+                            Tag="{Binding}" Click="WorldOpen_Click"/>
+                    <Button Content="导出 zip" Style="{StaticResource FlatButton}" Padding="12,5" Margin="8,0,0,0"
+                            Tag="{Binding}" Click="WorldExport_Click"/>
+                    <Button Content="删除" Style="{StaticResource FlatButton}" Padding="12,5" Margin="8,0,0,0"
+                            Tag="{Binding}" Click="WorldDelete_Click"/>
+                  </StackPanel>
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </Grid.Resources>
+
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+          </Grid.RowDefinitions>
+
+          <!-- 标题 + 这一栏的说明 -->
+          <StackPanel Grid.Row="0" Margin="22,18,22,0">
+            <TextBlock Text="{Binding Title}" FontSize="17" FontWeight="SemiBold"
+                       Foreground="{StaticResource TextBrush}"/>
+            <TextBlock Text="{Binding HintText}" FontSize="12" TextWrapping="Wrap"
+                       Foreground="{StaticResource TextMutedBrush}" Margin="0,6,0,0"/>
+          </StackPanel>
+
+          <!-- 搜索条：只有能联网搜的栏目才有 -->
+          <Border Grid.Row="1" Style="{StaticResource Card}" Margin="22,14,22,0"
+                  Visibility="{Binding ShowSearchPanel, Converter={StaticResource BoolVis}}">
+            <StackPanel>
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBox x:Name="ContentQueryBox" Grid.Column="0" Height="32"
+                         VerticalContentAlignment="Center" Padding="8,0"
+                         Text="{Binding SearchQuery, UpdateSourceTrigger=PropertyChanged}"/>
+
+                <TextBox Grid.Column="1" Width="104" Height="32" Margin="8,0,0,0"
+                         VerticalContentAlignment="Center" Padding="8,0"
+                         Text="{Binding McVersion, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="按游戏版本过滤，留空表示不限"/>
+
+                <TextBox Grid.Column="2" Width="104" Height="32" Margin="8,0,0,0"
+                         VerticalContentAlignment="Center" Padding="8,0"
+                         Text="{Binding Loader, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="加载器（fabric / forge / neoforge / quilt），留空表示不限"
+                         Visibility="{Binding NeedsLoader, Converter={StaticResource BoolVis}}"/>
+
+                <Button Grid.Column="3" Content="{Binding SearchButtonText}"
+                        Style="{StaticResource PrimaryButton}" Margin="8,0,0,0"
+                        Click="ContentSearch_Click" IsEnabled="{Binding CanSearch}"/>
+              </Grid>
+
+              <TextBlock Text="{Binding SearchFilterText}" FontSize="11.5"
+                         Foreground="{StaticResource TextMutedBrush}" Margin="0,8,0,0"/>
+
+              <!-- 数据包要选一个世界 -->
+              <Grid Margin="0,10,0,0"
+                    Visibility="{Binding NeedsWorldPick, Converter={StaticResource BoolVis}}">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="装到哪个世界" FontSize="12.5" VerticalAlignment="Center"
+                           Foreground="{StaticResource TextSoftBrush}"/>
+                <ComboBox Grid.Column="1" Margin="12,0,0,0" Height="30"
+                          ItemsSource="{Binding Worlds}" DisplayMemberPath="Name"
+                          SelectedValuePath="Name" SelectedValue="{Binding TargetWorld}"/>
+              </Grid>
+            </StackPanel>
+          </Border>
+
+          <!-- 世界栏的工具条 -->
+          <Border Grid.Row="1" Style="{StaticResource Card}" Margin="22,14,22,0"
+                  Visibility="{Binding ShowWorldPanel, Converter={StaticResource BoolVis}}">
+            <StackPanel Orientation="Horizontal">
+              <Button Content="导入存档 zip" Style="{StaticResource PrimaryButton}" Click="WorldImport_Click"/>
+              <Button Content="打开存档目录" Style="{StaticResource FlatButton}" Margin="8,0,0,0"
+                      Click="OpenContentFolder_Click"/>
+              <TextBlock Text="{Binding InstanceText}" FontSize="11.5" VerticalAlignment="Center"
+                         Foreground="{StaticResource TextMutedBrush}" Margin="14,0,0,0"/>
+            </StackPanel>
+          </Border>
+
+          <!-- 状态行 -->
+          <Border Grid.Row="2" Style="{StaticResource Card}" Padding="14,10" Margin="22,10,22,0"
+                  Visibility="{Binding HasStatus, Converter={StaticResource BoolVis}}">
+            <TextBlock Text="{Binding StatusMessage}" FontSize="12" TextWrapping="Wrap"
+                       Foreground="{StaticResource TextSoftBrush}"/>
+          </Border>
+
+          <!-- 列表 -->
+          <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto" Padding="22,14,22,18">
+            <Grid>
+              <!-- 搜索结果 -->
+              <ItemsControl ItemsSource="{Binding Results}" ItemTemplate="{StaticResource ContentRowTpl}"
+                            Visibility="{Binding ShowSearchPanel, Converter={StaticResource BoolVis}}"/>
+
+              <!-- 世界列表 -->
+              <ItemsControl ItemsSource="{Binding Worlds}" ItemTemplate="{StaticResource WorldRowTpl}"
+                            Visibility="{Binding ShowWorldPanel, Converter={StaticResource BoolVis}}"/>
+
+              <!-- 收藏夹 -->
+              <ItemsControl ItemsSource="{Binding Favorites}" ItemTemplate="{StaticResource ContentRowTpl}"
+                            Visibility="{Binding ShowFavoritePanel, Converter={StaticResource BoolVis}}"/>
+            </Grid>
+          </ScrollViewer>
+        </Grid>
 
         <!-- ════ 设置页 ════ -->
         <ScrollViewer x:Name="PageSettings" Visibility="Collapsed"
@@ -914,70 +1101,266 @@
           <Grid>
             <!-- ── 联机 → 大厅 ── -->
             <StackPanel x:Name="ToolSecLobby">
-            <Border Background="#E8F2FE" BorderBrush="#C6DEF8" BorderThickness="1"
-                    CornerRadius="6" Padding="16,12" Margin="0,0,0,12">
-              <TextBlock Text="[提示] 联机服务对您的网络质量要求较高，如遇连接不上可尝试更换房间。"
-                         FontSize="12.5" Foreground="{StaticResource PrimaryLoBrush}"
-                         TextWrapping="Wrap"/>
-            </Border>
 
-            <Border Style="{StaticResource Card}">
-              <StackPanel>
-                <TextBlock Text="加入大厅" FontSize="14" FontWeight="SemiBold"
-                           Foreground="{StaticResource TextBrush}" Margin="0,0,0,10"/>
-                <TextBlock Text="1、在下方输入朋友发送给你的大厅编号，单击【加入】。"
-                           FontSize="12.5" Foreground="{StaticResource TextSoftBrush}" Margin="0,0,0,4"/>
-                <TextBlock Text="2、启动游戏，选择【多人游戏】，在局域网游戏中加入大厅。"
-                           FontSize="12.5" Foreground="{StaticResource TextSoftBrush}" Margin="0,0,0,12"/>
+              <!-- 先把「这里没有官方服务器」说清楚。不解释清楚，用户会一直等一个
+                   永远不会出现的编号，那才是真正的坑。 -->
+              <Border Background="#E8F2FE" BorderBrush="#C6DEF8" BorderThickness="1"
+                      CornerRadius="6" Padding="16,12" Margin="0,0,0,12">
+                <TextBlock FontSize="12.5" Foreground="{StaticResource PrimaryLoBrush}"
+                           TextWrapping="Wrap"
+                           Text="[说明] 这里没有官方中继服务器，也不需要它：局域网世界走游戏自带的广播发现；大厅编号本身就是把地址和端口编码后的结果，不经过任何第三方。所以下面的功能不会因为某个服务下线而失效。"/>
+              </Border>
 
-                <Grid>
-                  <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                  </Grid.ColumnDefinitions>
-                  <TextBox Grid.Column="0" Margin="0,0,8,0"
-                           ToolTip="编号应该长得像这样：U/NNNN-AAAA-SSSS-EEEE"
-                           Text="{Binding LobbyCode, UpdateSourceTrigger=PropertyChanged}"/>
-                  <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <Button Content="清除" Style="{StaticResource FlatButton}" Margin="0,0,6,0"/>
-                    <Button Content="粘贴" Style="{StaticResource FlatButton}" Margin="0,0,6,0"/>
-                    <Button Content="加入" Style="{StaticResource FlatButton}"/>
-                  </StackPanel>
-                </Grid>
-              </StackPanel>
-            </Border>
+              <!-- 状态行：上一次动作的结果。没动作时整行不出现。 -->
+              <Border Background="#F2F7FE" BorderBrush="#D6E6FA" BorderThickness="1"
+                      CornerRadius="6" Padding="14,10" Margin="0,0,0,12"
+                      Visibility="{Binding Lobby.HasStatus, Converter={StaticResource BoolVis}}">
+                <TextBlock Text="{Binding Lobby.Status}" FontSize="12.5"
+                           Foreground="{StaticResource PrimaryLoBrush}" TextWrapping="Wrap"/>
+              </Border>
 
-            <Border Style="{StaticResource Card}">
-              <StackPanel>
-                <TextBlock Text="创建大厅" FontSize="14" FontWeight="SemiBold"
-                           Foreground="{StaticResource TextBrush}" Margin="0,0,0,10"/>
-                <TextBlock Text="1、进入世界后，在游戏菜单中选择【对局域网开放】。"
-                           FontSize="12.5" Foreground="{StaticResource TextSoftBrush}" Margin="0,0,0,4"/>
-                <TextBlock Text="2、在下方选择此游戏实例，单击【创建】。"
-                           FontSize="12.5" Foreground="{StaticResource TextSoftBrush}" Margin="0,0,0,4"/>
-                <TextBlock Text="3、成功创建大厅后，复制大厅编号并发送给你的朋友"
-                           FontSize="12.5" Foreground="{StaticResource TextSoftBrush}" Margin="0,0,0,12"/>
+              <!-- 局域网世界 -->
+              <Border Style="{StaticResource Card}">
+                <StackPanel>
+                  <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*"/>
+                      <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="局域网世界" FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextBrush}" VerticalAlignment="Center"/>
+                    <Button Grid.Column="1" Content="{Binding Lobby.ScanButtonText}"
+                            Style="{StaticResource FlatButton}" Padding="14,6"
+                            IsEnabled="{Binding Lobby.IsScanning, Converter={StaticResource InvBool}}"
+                            Click="ScanLan_Click"/>
+                  </Grid>
 
-                <Grid>
-                  <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                  </Grid.ColumnDefinitions>
-                  <ComboBox Grid.Column="0" Margin="0,0,8,0"/>
-                  <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <Button Content="手动输入" Style="{StaticResource FlatButton}" Margin="0,0,6,0"/>
-                    <Button Content="刷新" Style="{StaticResource FlatButton}" Margin="0,0,6,0"/>
-                    <Button Content="创建" Style="{StaticResource FlatButton}"/>
-                  </StackPanel>
-                </Grid>
-              </StackPanel>
-            </Border>
+                  <TextBlock FontSize="12.5" Foreground="{StaticResource TextSoftBrush}"
+                             TextWrapping="Wrap" Margin="0,0,0,8"
+                             Text="同一个局域网里，只要有人在游戏里选了「对局域网开放」，这里就能直接看到他。"/>
+
+                  <TextBlock Text="{Binding Lobby.ScanNote}" FontSize="12.5"
+                             Foreground="{StaticResource TextMutedBrush}" TextWrapping="Wrap"
+                             Visibility="{Binding Lobby.HasScanNote, Converter={StaticResource BoolVis}}"/>
+
+                  <ItemsControl ItemsSource="{Binding Lobby.Worlds}" Margin="0,6,0,0">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Grid Margin="0,0,0,6">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                          </Grid.ColumnDefinitions>
+                          <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding Motd}" FontSize="13"
+                                       Foreground="{StaticResource TextBrush}"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{Binding DetailText}" FontSize="11.5"
+                                       FontFamily="{StaticResource MonoFont}"
+                                       Foreground="{StaticResource TextMutedBrush}"/>
+                          </StackPanel>
+                          <Button Grid.Column="1" Content="加入列表" Style="{StaticResource FlatButton}"
+                                  Padding="14,6" Tag="{Binding}" Click="AddLanWorld_Click"/>
+                        </Grid>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
+
+              <!-- 加入大厅 -->
+              <Border Style="{StaticResource Card}">
+                <StackPanel>
+                  <TextBlock Text="加入大厅" FontSize="14" FontWeight="SemiBold"
+                             Foreground="{StaticResource TextBrush}" Margin="0,0,0,10"/>
+                  <TextBlock Text="1、把朋友发来的大厅编号填进下面这一栏。"
+                             FontSize="12.5" Foreground="{StaticResource TextSoftBrush}" Margin="0,0,0,4"/>
+                  <TextBlock Text="2、点【加入】—— 编号会被写进这个实例的服务器列表，进游戏选【多人游戏】就能看到它。"
+                             FontSize="12.5" Foreground="{StaticResource TextSoftBrush}"
+                             TextWrapping="Wrap" Margin="0,0,0,12"/>
+
+                  <Grid>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*"/>
+                      <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox Grid.Column="0" Margin="0,0,8,0" FontFamily="{StaticResource MonoFont}"
+                             ToolTip="编号应该长得像这样：60N0-0GMR-YXK"
+                             Text="{Binding Lobby.JoinCode, UpdateSourceTrigger=PropertyChanged}"/>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                      <Button Content="清除" Style="{StaticResource FlatButton}" Padding="14,6"
+                              Margin="0,0,6,0" Click="ClearLobbyCode_Click"/>
+                      <Button Content="粘贴" Style="{StaticResource FlatButton}" Padding="14,6"
+                              Margin="0,0,6,0" Click="PasteLobbyCode_Click"/>
+                      <Button Content="加入" Style="{StaticResource PrimaryButton}" Padding="18,6"
+                              IsEnabled="{Binding Lobby.CanJoin}" Click="JoinLobby_Click"/>
+                    </StackPanel>
+                  </Grid>
+
+                  <!-- 一边打字一边解码。编号长得都差不多，用户需要马上看到它指向哪儿。 -->
+                  <TextBlock Text="{Binding Lobby.JoinPreview}" FontSize="12"
+                             FontFamily="{StaticResource MonoFont}" TextWrapping="Wrap"
+                             Foreground="{StaticResource TextMutedBrush}" Margin="0,8,0,0"/>
+                </StackPanel>
+              </Border>
+
+              <!-- 创建大厅 -->
+              <Border Style="{StaticResource Card}">
+                <StackPanel>
+                  <TextBlock Text="创建大厅" FontSize="14" FontWeight="SemiBold"
+                             Foreground="{StaticResource TextBrush}" Margin="0,0,0,10"/>
+                  <TextBlock Text="1、进游戏，在「对局域网开放」里选好端口（默认 25565）。"
+                             FontSize="12.5" Foreground="{StaticResource TextSoftBrush}" Margin="0,0,0,4"/>
+                  <TextBlock Text="2、在下面选本机的地址、填对端口，点【生成编号】。"
+                             FontSize="12.5" Foreground="{StaticResource TextSoftBrush}" Margin="0,0,0,4"/>
+                  <TextBlock Text="3、把编号发给朋友，他照上面的「加入大厅」做就行。"
+                             FontSize="12.5" Foreground="{StaticResource TextSoftBrush}" Margin="0,0,0,12"/>
+
+                  <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*"/>
+                      <ColumnDefinition Width="Auto"/>
+                      <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <ComboBox Grid.Column="0" Margin="0,0,8,0"
+                              ItemsSource="{Binding Lobby.LocalAddresses}"
+                              SelectedItem="{Binding Lobby.SelectedAddress}"/>
+                    <TextBox Grid.Column="1" Width="90" Margin="0,0,8,0"
+                             FontFamily="{StaticResource MonoFont}"
+                             Text="{Binding Lobby.PortText, UpdateSourceTrigger=PropertyChanged}"/>
+                    <StackPanel Grid.Column="2" Orientation="Horizontal">
+                      <Button Content="重新检测" Style="{StaticResource FlatButton}" Padding="14,6"
+                              Margin="0,0,6,0" Click="RefreshLocalIp_Click"/>
+                      <Button Content="生成编号" Style="{StaticResource PrimaryButton}" Padding="18,6"
+                              IsEnabled="{Binding Lobby.CanCreateCode}" Click="CreateLobbyCode_Click"/>
+                    </StackPanel>
+                  </Grid>
+
+                  <TextBlock Text="{Binding Lobby.PortHint}" FontSize="12"
+                             Foreground="{StaticResource TextMutedBrush}" TextWrapping="Wrap"/>
+
+                  <!-- 生成出来的编号 -->
+                  <Border Visibility="{Binding Lobby.HasCreatedCode, Converter={StaticResource BoolVis}}"
+                          Background="#F0F7EE" BorderBrush="#CFE8C8" BorderThickness="1"
+                          CornerRadius="6" Padding="14,12" Margin="0,10,0,0">
+                    <StackPanel>
+                      <TextBlock Text="把这个编号发给朋友" FontSize="12.5"
+                                 Foreground="{StaticResource TextSoftBrush}" Margin="0,0,0,6"/>
+                      <TextBlock Text="{Binding Lobby.CreatedCode}" FontSize="20" FontWeight="SemiBold"
+                                 FontFamily="{StaticResource MonoFont}"
+                                 Foreground="{StaticResource SuccessBrush}" Margin="0,0,0,8"/>
+                      <TextBlock Text="{Binding Lobby.CreatedHint}" FontSize="12"
+                                 Foreground="{StaticResource TextSoftBrush}" TextWrapping="Wrap"
+                                 Margin="0,0,0,10"/>
+                      <StackPanel Orientation="Horizontal">
+                        <Button Content="复制编号" Style="{StaticResource FlatButton}" Padding="14,6"
+                                Margin="0,0,6,0" Click="CopyCreatedCode_Click"/>
+                        <Button Content="复制地址" Style="{StaticResource FlatButton}" Padding="14,6"
+                                Click="CopyCreatedAddress_Click"/>
+                      </StackPanel>
+                    </StackPanel>
+                  </Border>
+                </StackPanel>
+              </Border>
+
+              <!-- 服务器列表：就是游戏自己那份 servers.dat -->
+              <Border Style="{StaticResource Card}">
+                <StackPanel>
+                  <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*"/>
+                      <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="服务器列表" FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextBrush}" VerticalAlignment="Center"/>
+                    <Button Grid.Column="1" Content="刷新" Style="{StaticResource FlatButton}"
+                            Padding="14,6" Click="RefreshServers_Click"/>
+                  </Grid>
+
+                  <TextBlock Text="{Binding Lobby.ServersPath}" FontSize="11.5"
+                             FontFamily="{StaticResource MonoFont}"
+                             Foreground="{StaticResource TextMutedBrush}"
+                             TextTrimming="CharacterEllipsis" Margin="0,0,0,8"/>
+
+                  <TextBlock Text="{Binding Lobby.ServersEmptyText}" FontSize="12.5"
+                             Foreground="{StaticResource TextMutedBrush}" TextWrapping="Wrap"/>
+
+                  <ItemsControl ItemsSource="{Binding Lobby.Servers}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Grid Margin="0,0,0,6">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                          </Grid.ColumnDefinitions>
+                          <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding Name}" FontSize="13"
+                                       Foreground="{StaticResource TextBrush}"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{Binding Ip}" FontSize="11.5"
+                                       FontFamily="{StaticResource MonoFont}"
+                                       Foreground="{StaticResource TextMutedBrush}"/>
+                          </StackPanel>
+                          <Button Grid.Column="1" Content="移除" Style="{StaticResource FlatButton}"
+                                  Padding="14,6" Tag="{Binding}" Click="RemoveServer_Click"/>
+                        </Grid>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
 
             </StackPanel><!-- /ToolSecLobby -->
 
             <!-- ── 奇妙小工具 → 百宝箱 ── -->
             <StackPanel x:Name="ToolSecBox" Visibility="Collapsed">
+
+              <!-- 上一次动作的结果。没动作时整行不出现。 -->
+              <Border Background="#EEF7EE" BorderBrush="#CFE6CF" BorderThickness="1"
+                      CornerRadius="6" Padding="14,10" Margin="0,0,0,12"
+                      Visibility="{Binding HasToolStatus, Converter={StaticResource BoolVis}}">
+                <TextBlock Text="{Binding ToolStatus}" FontSize="12.5" TextWrapping="Wrap"
+                           Foreground="#2F6B2F"/>
+              </Border>
+
+              <!-- 体检：这个实例到底占了多少，以及占在哪儿 -->
               <Border Style="{StaticResource Card}" Margin="0">
+                <StackPanel>
+                  <Grid Margin="0,0,0,4">
+                    <StackPanel>
+                      <TextBlock Text="目录体检" FontSize="14" FontWeight="SemiBold"
+                                 Foreground="{StaticResource TextBrush}"/>
+                      <TextBlock Text="{Binding ToolSummaryText}" FontSize="12"
+                                 Foreground="{StaticResource TextMutedBrush}" Margin="0,4,0,0"/>
+                    </StackPanel>
+                    <Button Content="刷新" Style="{StaticResource FlatButton}" Padding="14,6"
+                            HorizontalAlignment="Right" VerticalAlignment="Top"
+                            Click="RefreshSurvey_Click"/>
+                  </Grid>
+
+                  <TextBlock Text="{Binding ToolDirLabel}" FontSize="11.5" TextWrapping="Wrap"
+                             Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,2"/>
+
+                  <ItemsControl ItemsSource="{Binding ToolUsages}" Margin="0,8,0,0">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Grid Margin="0,0,0,4">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="110"/>
+                            <ColumnDefinition Width="*"/>
+                          </Grid.ColumnDefinitions>
+                          <TextBlock Grid.Column="0" Text="{Binding Label}" FontSize="12.5"
+                                     Foreground="{StaticResource TextSoftBrush}"/>
+                          <TextBlock Grid.Column="1" Text="{Binding DisplayText}" FontSize="12.5"
+                                     Foreground="{StaticResource TextMutedBrush}"/>
+                        </Grid>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
+
+              <Border Style="{StaticResource Card}">
                 <Grid>
                   <StackPanel>
                     <TextBlock Text="Mod 管理" FontSize="14" FontWeight="SemiBold"
@@ -986,9 +1369,119 @@
                                FontSize="12" Foreground="{StaticResource TextMutedBrush}"
                                Margin="0,4,0,0"/>
                   </StackPanel>
-                  <Button Content="打开" Style="{StaticResource FlatButton}"
+                  <Button Content="打开" Style="{StaticResource FlatButton}" Padding="14,6"
                           HorizontalAlignment="Right" VerticalAlignment="Center"
                           Click="Mods_Click"/>
+                </Grid>
+              </Border>
+
+              <Border Style="{StaticResource Card}">
+                <Grid>
+                  <StackPanel>
+                    <TextBlock Text="校验并补全游戏文件" FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextBrush}"/>
+                    <TextBlock Text="比对每个文件的大小与校验值，缺哪个下哪个 —— 比整个删掉重装稳妥。"
+                               FontSize="12" Foreground="{StaticResource TextMutedBrush}"
+                               Margin="0,4,0,0" TextWrapping="Wrap"/>
+                  </StackPanel>
+                  <Button Content="开始校验" Style="{StaticResource FlatButton}" Padding="14,6"
+                          HorizontalAlignment="Right" VerticalAlignment="Center"
+                          Click="Install_Click"/>
+                </Grid>
+              </Border>
+
+              <Border Style="{StaticResource Card}">
+                <Grid>
+                  <StackPanel>
+                    <TextBlock Text="存档" FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextBrush}"/>
+                    <TextBlock Text="{Binding ToolWorldText}" FontSize="12"
+                               Foreground="{StaticResource TextMutedBrush}" Margin="0,4,0,0"/>
+                  </StackPanel>
+                  <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                              VerticalAlignment="Center">
+                    <Button Content="管理" Style="{StaticResource FlatButton}" Padding="14,6"
+                            Margin="0,0,8,0" Click="ManageWorlds_Click"/>
+                    <Button Content="打开目录" Style="{StaticResource FlatButton}" Padding="14,6"
+                            Tag="saves" Click="OpenTool_Click"/>
+                  </StackPanel>
+                </Grid>
+              </Border>
+
+              <Border Style="{StaticResource Card}">
+                <Grid>
+                  <StackPanel>
+                    <TextBlock Text="截图" FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextBrush}"/>
+                    <TextBlock Text="{Binding ToolScreenshotText}" FontSize="12"
+                               Foreground="{StaticResource TextMutedBrush}" Margin="0,4,0,0"/>
+                  </StackPanel>
+                  <Button Content="打开目录" Style="{StaticResource FlatButton}" Padding="14,6"
+                          HorizontalAlignment="Right" VerticalAlignment="Center"
+                          Tag="screenshots" Click="OpenTool_Click"/>
+                </Grid>
+              </Border>
+
+              <Border Style="{StaticResource Card}">
+                <Grid>
+                  <StackPanel>
+                    <TextBlock Text="崩溃报告" FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextBrush}"/>
+                    <TextBlock Text="{Binding ToolCrashText}" FontSize="12"
+                               Foreground="{StaticResource TextMutedBrush}" Margin="0,4,0,0"/>
+                  </StackPanel>
+                  <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                              VerticalAlignment="Center">
+                    <Button Content="打开最新" Style="{StaticResource FlatButton}" Padding="14,6"
+                            Margin="0,0,8,0" Click="OpenLatestCrash_Click"/>
+                    <Button Content="打开目录" Style="{StaticResource FlatButton}" Padding="14,6"
+                            Tag="crash-reports" Click="OpenTool_Click"/>
+                  </StackPanel>
+                </Grid>
+              </Border>
+
+              <Border Style="{StaticResource Card}">
+                <Grid>
+                  <StackPanel>
+                    <TextBlock Text="清理垃圾" FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextBrush}"/>
+                    <TextBlock Text="只清轮转过的日志、过期崩溃报告和下载残留。存档、Mod、配置一律不动。"
+                               FontSize="12" Foreground="{StaticResource TextMutedBrush}"
+                               Margin="0,4,0,0" TextWrapping="Wrap"/>
+                  </StackPanel>
+                  <Button Content="扫描并清理" Style="{StaticResource FlatButton}" Padding="14,6"
+                          HorizontalAlignment="Right" VerticalAlignment="Center"
+                          Click="CleanJunk_Click"/>
+                </Grid>
+              </Border>
+
+              <Border Style="{StaticResource Card}">
+                <Grid>
+                  <StackPanel>
+                    <TextBlock Text="复制启动命令" FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextBrush}"/>
+                    <TextBlock Text="最近一次真正执行的命令行（取自启动日志首行，不是重新拼的）。"
+                               FontSize="12" Foreground="{StaticResource TextMutedBrush}"
+                               Margin="0,4,0,0" TextWrapping="Wrap"/>
+                  </StackPanel>
+                  <Button Content="复制" Style="{StaticResource FlatButton}" Padding="14,6"
+                          HorizontalAlignment="Right" VerticalAlignment="Center"
+                          Click="CopyLaunchCommand_Click"/>
+                </Grid>
+              </Border>
+
+              <Border Style="{StaticResource Card}">
+                <Grid>
+                  <StackPanel>
+                    <TextBlock Text="复制诊断信息" FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextBrush}"/>
+                    <TextBlock Text="环境 + Java + 目录体积 + 日志尾巴，一次复制走，求助时直接贴。"
+                               FontSize="12" Foreground="{StaticResource TextMutedBrush}"
+                               Margin="0,4,0,0" TextWrapping="Wrap"/>
+                  </StackPanel>
+                  <Button Content="复制" Style="{StaticResource FlatButton}" Padding="14,6"
+                          HorizontalAlignment="Right" VerticalAlignment="Center"
+                          Click="CopyDiagnostics_Click"/>
                 </Grid>
               </Border>
 
@@ -1000,7 +1493,7 @@
                     <TextBlock Text="{Binding GameRoot}" FontSize="12" TextWrapping="Wrap"
                                Foreground="{StaticResource TextMutedBrush}" Margin="0,4,0,0"/>
                   </StackPanel>
-                  <Button Content="打开" Style="{StaticResource FlatButton}"
+                  <Button Content="打开" Style="{StaticResource FlatButton}" Padding="14,6"
                           HorizontalAlignment="Right" VerticalAlignment="Center"
                           Click="OpenFolder_Click"/>
                 </Grid>
@@ -1016,9 +1509,9 @@
                   </StackPanel>
                   <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                               VerticalAlignment="Center">
-                    <Button Content="展开" Style="{StaticResource FlatButton}"
+                    <Button Content="展开" Style="{StaticResource FlatButton}" Padding="14,6"
                             Click="ShowLog_Click" Margin="0,0,8,0"/>
-                    <Button Content="清空" Style="{StaticResource FlatButton}"
+                    <Button Content="清空" Style="{StaticResource FlatButton}" Padding="14,6"
                             Click="ClearLog_Click"/>
                   </StackPanel>
                 </Grid>

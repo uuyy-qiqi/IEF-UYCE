@@ -257,6 +257,28 @@ public sealed class LaunchService : IDisposable
             var (code, crashed, reason) = await GameLauncher.WaitAsync(handle, ct).ConfigureAwait(false);
             return new LaunchOutcome(code, crashed, reason, logPath);
         }
+        catch (OperationCanceledException)
+        {
+            // 取消 = 这次启动不要了，那就得真把进程收掉。
+            //
+            // 不能在 finally 里才清句柄、让调用方自己去杀：异常抛出去之后
+            // CurrentHandle 已经被清空，调用方手里没有任何东西可杀，游戏会
+            // 变成没人管的孤儿进程（关启动器"结束游戏"就是踩的这个坑）。
+            try
+            {
+                if (!handle.Process.HasExited)
+                {
+                    handle.Process.Kill(entireProcessTree: true);
+                    onLog?.Invoke("[启动器] 已结束游戏进程（取消启动）");
+                }
+            }
+            catch
+            {
+                // 进程可能刚好自己退了，或者权限不够 —— 都不该盖掉真正的取消异常
+            }
+
+            throw;
+        }
         finally
         {
             // 无论正常退出、崩溃还是被取消，都要把句柄清掉，

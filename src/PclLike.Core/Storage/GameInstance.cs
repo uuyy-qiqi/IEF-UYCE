@@ -292,6 +292,69 @@ public sealed class InstanceStore
     /// <summary>该实例的 Mod 目录（隔离模式下才有意义）。</summary>
     public string ModsDirFor(GameInstance instance) => Path.Combine(instance.GameDir, "mods");
 
+    /// <summary>
+    /// 复制一个实例（配置文件 + 整个游戏目录）。
+    ///
+    /// 复制出来的是独立副本，所以新实例强制 Isolated = true —— 共享模式的实例
+    /// 本来就没有自己的游戏目录，抄一份只会得到一个空壳。
+    /// </summary>
+    public GameInstance Copy(string id, string? newName = null)
+    {
+        var src = Load(id) ?? throw new ArgumentException($"实例不存在：{id}", nameof(id));
+
+        var name = string.IsNullOrWhiteSpace(newName) ? $"{src.Name} - 副本" : newName.Trim();
+        var newId = GameInstance.MakeUniqueId(name, LoadAll().Select(i => i.Id));
+
+        var copy = new GameInstance
+        {
+            Id = newId,
+            Name = name,
+            VersionId = src.VersionId,
+            Isolated = true,
+            JvmArgs = src.JvmArgs,
+            MaxMemoryMb = src.MaxMemoryMb,
+            Loader = src.Loader,
+            LoaderVersion = src.LoaderVersion,
+            Note = src.Note,
+            CreatedAt = DateTimeOffset.Now,
+        };
+
+        Save(copy);
+
+        // 把游戏文件也搬过去。源是共享模式的话 gameDir 指向启动器根，
+        // 那里装着所有版本共用的东西，绝不能整目录抄 —— 只挑实例私有的那几个。
+        var from = src.Isolated ? src.GameDir : null;
+        if (from is not null && Directory.Exists(from))
+        {
+            CopyDir(from, copy.GameDir);
+        }
+        else
+        {
+            foreach (var sub in new[] { "mods", "config", "saves", "resourcepacks", "shaderpacks" })
+            {
+                var s = Path.Combine(src.GameDir, sub);
+                if (Directory.Exists(s)) CopyDir(s, Path.Combine(copy.GameDir, sub));
+            }
+        }
+
+        return copy;
+    }
+
+    private static void CopyDir(string from, string to)
+    {
+        Directory.CreateDirectory(to);
+
+        foreach (var dir in Directory.EnumerateDirectories(from, "*", SearchOption.AllDirectories))
+            Directory.CreateDirectory(Path.Combine(to, Path.GetRelativePath(from, dir)));
+
+        foreach (var file in Directory.EnumerateFiles(from, "*", SearchOption.AllDirectories))
+        {
+            var dest = Path.Combine(to, Path.GetRelativePath(from, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+            File.Copy(file, dest, overwrite: true);
+        }
+    }
+
     /// <summary>该实例的存档目录。</summary>
     public string SavesDirFor(GameInstance instance) => Path.Combine(instance.GameDir, "saves");
 
