@@ -540,8 +540,11 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
+            // 界面上只给"人话"。异常类型写进日志 —— 排查时要能分清网络超时、
+            // 磁盘满，还是代码自己炸了，但用户看的是那句提示，
+            // 「（IOException）」这种后缀对他没有意义，只会让提示更像乱码。
             StatusMessage = $"安装失败：{ex.Message}";
-            _log(LogKind.Error, $"{Title}：{row.Title} 安装异常 —— {ex.Message}");
+            _log(LogKind.Error, $"{Title}：{row.Title} 安装异常 {ex.GetType().Name} —— {ex.Message}");
         }
         finally
         {
@@ -791,12 +794,27 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
             row.SetFavorite(_favorites.Has(row.ProjectId));
     }
 
+    private bool _disposed;
+
     public void Dispose()
     {
+        // 幂等：重复 Dispose 要无害。关闭窗口和切换实例都可能走到这里。
+        if (_disposed) return;
+        _disposed = true;
+
+        // 关窗时如果正在下载，取消它 —— 但不能让"已经被释放"这件事泄漏到
+        // 后续调用上：那一刻其它地方可能正拿着 _cts.Token 在等（自检就撞过
+        // 这个：一次取消之后紧接着的安装拿到 ObjectDisposedException）。
+        Console.WriteLine("[diag] ContentViewModel.Dispose 被调用，调用栈：");
+        Console.WriteLine(Environment.StackTrace);
+
         try { _cts.Cancel(); } catch { /* 已经释放了 */ }
         _cts.Dispose();
         _downloader.Dispose();
     }
+
+    /// <summary>是否已经释放。已释放的实例不该再被拿去搜索/安装。</summary>
+    public bool IsDisposed => _disposed;
 }
 
 /// <summary>

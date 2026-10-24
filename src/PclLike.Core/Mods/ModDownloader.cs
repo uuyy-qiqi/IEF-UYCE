@@ -184,62 +184,119 @@ public sealed class ModDownloader : IDisposable
         }
 
         Exception? lastError = null;
+        var tried = 0;
 
-        // 从光标处开始试，并且每建一条连接就把光标往前挪一格。
+        // 最多 3 轮。每轮把候选表按光标顺序试一遍；一轮全败就**重新解析一次 DNS**
+        // 再试下一轮。
         //
-        // 为什么必须挪：连接层每次重试都会从候选表开头挑，于是同一个"能握手、但在
-        // 响应体阶段挂死几十秒"的边缘节点会被反复选中 —— 重试三次等于白等两分钟。
-        // 实测 cdn.modrinth.com 就有这种节点。挪一格，上层的 25 秒静默重试才真的
-        // 有机会换到别的节点上去。
-        var start = 0;
-        if (ips.Length > 0 && _ipCursor.TryGetValue(host, out var cursor))
-            start = ((cursor % ips.Length) + ips.Length) % ips.Length;
-
-        for (var step = 0; step < ips.Length; step++)
+        // 为什么要重解析：最常见的失败形态是"解析的那一刻只给了一个死节点"
+        // （实测系统解析器对 cdn.modrinth.com 反复只回一个地址），而 DNS 的答案
+        // 会变 —— 该域名背后是一池由运营商缓存的边缘 IP。只试一轮，用户点一次
+        // 「安装」就只会撞那一个死地址；多试几轮，常常第二轮就换到活的了。
+        for (var round = 0; round < 3; round++)
         {
+            // 从光标处开始试，并且每建成功一条连接就把光标往前挪一格。
+            //
+            // 为什么必须挪：连接层每次重试都会从候选表开头挑，于是同一个"能握手、
+            // 但在响应体阶段挂死几十秒"的边缘节点会被反复选中 —— 重试三次等于
+            // 白等两分钟。实测 cdn.modrinth.com 就有这种节点。挪一格，上层的
+            // 25 秒静默重试才真的有机会换到别的节点上去。
+            var start = 0;
+            if (ips.Length > 0 && _ipCursor.TryGetValue(host, out var cursor))
+                start = ((cursor % ips.Length) + ips.Length) % ips.Length;
+
+            for (var step = 0; step < ips.Length; step++)
+            {
+                if (ct.IsCancellationRequested) break;
+
+                var index = (start + step) % ips.Length;
+                var ip = ips[index];
+                tried++;
+
+                var sock = NewSocket(ip.AddressFamily);
+                try
+                {
+                    using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    // 单个 IP 别等太久 —— 挂死的节点要快速跳过
+                    linked.CancelAfter(TimeSpan.FromSeconds(6));
+
+                    await sock.ConnectAsync(
+                        new System.Net.DnsEndPoint(ip.ToString(), port), linked.Token).ConfigureAwait(false);
+
+                    // 这个节点是活的，记下来给后面的排序当提示
+                    _goodIpCache[host] = ip.ToString();
+                    _ipCursor[host] = (index + 1) % ips.Length;
+
+                    return new System.Net.Sockets.NetworkStream(sock, ownsSocket: true);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    // 用户真的取消了，原样往上抛
+                    sock.Dispose();
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    sock.Dispose();
+
+                    // 单个 IP 的 6 秒超时是我们自己掐的，不是用户取消。
+                    // 必须换成别的异常类型再往外抛：上层到处都用
+                    // catch (OperationCanceledException) 表示"用户点了取消"，
+                    // 把连接超时伪装成取消会让它报"安装已取消"（用户看到会一头雾水），
+                    // 更糟的是取消通常意味着"不要再重试了"，于是一次网络抖动就被
+                    // 当成了用户意图。
+                    lastError = ex is OperationCanceledException
+                        ? new IOException($"连接 {ip} 超时（{host}:{port}）")
+                        : ex;
+                }
+            }
+
             if (ct.IsCancellationRequested) break;
 
-            var index = (start + step) % ips.Length;
-            var ip = ips[index];
-
-            var sock = NewSocket(ip.AddressFamily);
-            try
-            {
-                using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                // 单个 IP 别等太久 —— 挂死的节点要快速跳过
-                linked.CancelAfter(TimeSpan.FromSeconds(6));
-
-                await sock.ConnectAsync(new System.Net.DnsEndPoint(ip.ToString(), port), linked.Token);
-
-                // 这个节点是活的，记下来给后面的排序当提示
-                _goodIpCache[host] = ip.ToString();
-                _ipCursor[host] = (index + 1) % ips.Length;
-
-                return new System.Net.Sockets.NetworkStream(sock, ownsSocket: true);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                // 用户真的取消了，原样往上抛
-                sock.Dispose();
-                throw;
-            }
-            catch (Exception ex)
-            {
-                sock.Dispose();
-
-                // 单个 IP 的 6 秒超时是我们自己掐的，不是用户取消。
-                // 必须换成别的异常类型再往外抛：上层到处都用
-                // catch (OperationCanceledException) 表示"用户点了取消"，
-                // 把连接超时伪装成取消会让它报"安装已取消"（用户看到会一头雾水），
-                // 更糟的是取消通常意味着"不要再重试了"，于是一次网络抖动就被
-                // 当成了用户意图。
-                lastError = ex is OperationCanceledException
-                    ? new IOException($"连接 {ip} 超时（{host}:{port}）")
-                    : ex;
-            }
+            // 一轮全败：重新解析 + 重新扩展候选，换个池子里的地址再来
+            var refreshed = await RefreshCandidatesAsync(host, ips, ct);
+            if (refreshed.Length == 0) break;
+            ips = refreshed;
         }
 
-        throw lastError ?? new IOException($"无法连接 {host}:{port}");
+        throw lastError is null
+            ? new IOException($"无法连接 {host}:{port}")
+            : new IOException(
+                $"连不上 {host}:{port}（试了 {tried} 个地址都超时或被拒）。" +
+                $"原因：{lastError.Message}。网络恢复后点「重新安装」再试。");
+    }
+
+    /// <summary>
+    /// 重新解析主机名并把候选池再扩一遍（只追加没见过的新地址）。
+    ///
+    /// 和 <see cref="ExpandCandidatesAsync"/> 的区别：那个会因为"已经有 2 条以上"
+    /// 就跳过，这里是要在一轮连接全部失败后强制刷新，所以总是去问。
+    /// </summary>
+    private static async Task<System.Net.IPAddress[]> RefreshCandidatesAsync(
+        string host, System.Net.IPAddress[] current, CancellationToken ct)
+    {
+        var list = new List<System.Net.IPAddress>(current);
+
+        try
+        {
+            var fresh = await System.Net.Dns.GetHostAddressesAsync(host, ct);
+            foreach (var ip in fresh)
+                if (!list.Contains(ip)) list.Add(ip);
+        }
+        catch { /* 解析失败就用原来的 */ }
+
+        foreach (var server in ExtraDnsServers)
+        {
+            try
+            {
+                var found = await QueryARecordsAsync(server, host, ct);
+                foreach (var ip in found)
+                    if (!list.Contains(ip)) list.Add(ip);
+            }
+            catch { /* 单个解析器失败不影响其它 */ }
+        }
+
+        return [.. list];
     }
 
     /// <summary>
