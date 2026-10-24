@@ -378,6 +378,64 @@ public static class SelfTest
                 Check(finalJars == beforeJars.Count, "自检装的文件已清理（不留残留）", $"{finalJars} 个 jar");
             }
 
+            // 收藏夹里安装走的是另一条路：收藏只记项目本身、不记版本，所以点安装时
+            // 必须拿项目 id 回 Modrinth 重新挑一个适配当前实例的版本。
+            // 这条"重新解析"的路径跟搜索结果行不同，得单独跑一遍。
+            var favRow = content.Results[0];
+            var favProjectId = favRow.ProjectId;
+
+            try
+            {
+                content.ToggleFavorite(favRow);
+                content.Activate(ContentTab.Favorite, autoSearch: false);
+
+                Check(content.Favorites.Count > 0, "收藏夹里有刚收藏的项目", $"{content.Favorites.Count} 条");
+
+                if (content.Favorites.Count > 0)
+                {
+                    var favItem = content.Favorites[0];
+                    Check(favItem.ProjectId.Length > 0, "收藏项带 projectId", favItem.ProjectId);
+
+                    var reinstall = content.InstallAsync(favItem);
+                    for (var i = 0; i < 1800 && !reinstall.IsCompleted; i++)
+                    {
+                        DoEvents();
+                        System.Threading.Thread.Sleep(100);
+                    }
+
+                    var jarsNow = System.IO.Directory.Exists(modsDir)
+                        ? System.IO.Directory.GetFiles(modsDir, "*.jar").Select(System.IO.Path.GetFileName).ToList()
+                        : [];
+
+                    var added2 = jarsNow.Where(f => f is not null && !beforeJars.Contains(f)).ToList();
+
+                    Check(reinstall.IsCompleted, "收藏夹安装能在 3 分钟内结束", content.StatusMessage);
+                    Check(added2.Count > 0, "收藏夹里点安装能重新解析版本并落地",
+                        added2.Count > 0 ? string.Join(", ", added2) : content.StatusMessage);
+
+                    foreach (var f in added2)
+                    {
+                        try { System.IO.File.Delete(System.IO.Path.Combine(modsDir, f!)); }
+                        catch { }
+                    }
+                }
+            }
+            finally
+            {
+                // 收藏夹是用户的持久数据 —— 自检自己造的那一条必须自己删掉
+                content.Activate(ContentTab.Favorite, autoSearch: false);
+
+                if (content.Favorites.Any(f => f.ProjectId == favProjectId))
+                    content.ToggleFavorite(content.Favorites.First(f => f.ProjectId == favProjectId));
+            }
+
+            Check(!content.Favorites.Any(f => f.ProjectId == favProjectId), "自检的收藏已清掉（不留残留）");
+
+            var jarsLeft = System.IO.Directory.Exists(modsDir)
+                ? System.IO.Directory.GetFiles(modsDir, "*.jar").Length
+                : 0;
+            Check(jarsLeft == beforeJars.Count, "收藏夹安装的文件已清理（不留残留）", $"{jarsLeft} 个 jar");
+
             // 数据包栏：参数必须落成 mod + datapack 分类。
             // Modrinth 没有 datapack 这个 project_type，写成 datapack 会被服务端
             // 静默忽略（不报错，返回一堆 Mod）—— 所以这里盯死这两个值。
