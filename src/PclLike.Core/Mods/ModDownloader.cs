@@ -183,10 +183,24 @@ public sealed class ModDownloader : IDisposable
             catch { sock0.Dispose(); throw; }
         }
 
-        Exception? last = null;
-        foreach (var ip in ips)
+        Exception? lastError = null;
+
+        // 从光标处开始试，并且每建一条连接就把光标往前挪一格。
+        //
+        // 为什么必须挪：连接层每次重试都会从候选表开头挑，于是同一个"能握手、但在
+        // 响应体阶段挂死几十秒"的边缘节点会被反复选中 —— 重试三次等于白等两分钟。
+        // 实测 cdn.modrinth.com 就有这种节点。挪一格，上层的 25 秒静默重试才真的
+        // 有机会换到别的节点上去。
+        var start = 0;
+        if (ips.Length > 0 && _ipCursor.TryGetValue(host, out var cursor))
+            start = ((cursor % ips.Length) + ips.Length) % ips.Length;
+
+        for (var step = 0; step < ips.Length; step++)
         {
             if (ct.IsCancellationRequested) break;
+
+            var index = (start + step) % ips.Length;
+            var ip = ips[index];
 
             var sock = NewSocket(ip.AddressFamily);
             try
@@ -196,17 +210,43 @@ public sealed class ModDownloader : IDisposable
                 linked.CancelAfter(TimeSpan.FromSeconds(6));
 
                 await sock.ConnectAsync(new System.Net.DnsEndPoint(ip.ToString(), port), linked.Token);
+
+                // 这个节点是活的，记下来给后面的排序当提示
+                _goodIpCache[host] = ip.ToString();
+                _ipCursor[host] = (index + 1) % ips.Length;
+
                 return new System.Net.Sockets.NetworkStream(sock, ownsSocket: true);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // 用户真的取消了，原样往上抛
+                sock.Dispose();
+                throw;
             }
             catch (Exception ex)
             {
                 sock.Dispose();
-                last = ex;
+
+                // 单个 IP 的 6 秒超时是我们自己掐的，不是用户取消。
+                // 必须换成别的异常类型再往外抛：上层到处都用
+                // catch (OperationCanceledException) 表示"用户点了取消"，
+                // 把连接超时伪装成取消会让它报"安装已取消"（用户看到会一头雾水），
+                // 更糟的是取消通常意味着"不要再重试了"，于是一次网络抖动就被
+                // 当成了用户意图。
+                lastError = ex is OperationCanceledException
+                    ? new IOException($"连接 {ip} 超时（{host}:{port}）")
+                    : ex;
             }
         }
 
-        throw last ?? new IOException($"无法连接 {host}:{port}");
+        throw lastError ?? new IOException($"无法连接 {host}:{port}");
     }
+
+    /// <summary>
+    /// 每个主机名"下次从哪个候选开始试"的光标（配合连接层的轮换）。
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int>
+        _ipCursor = new(StringComparer.OrdinalIgnoreCase);
 
     private static System.Net.Sockets.Socket NewSocket(
         System.Net.Sockets.AddressFamily family) =>
@@ -236,8 +276,18 @@ public sealed class ModDownloader : IDisposable
         }
         catch
         {
-            return [];
+            ips = [];
         }
+
+        // 系统解析器只给一两条时必须补一手。
+        //
+        // 实测证据（2026-10-24，本机）：默认解析器（10.199.199.199 / 114.114.114.114 /
+        // 223.5.5.5）对 cdn.modrinth.com 都只回**同一个** 146.75.113.242，而那个
+        // Fastly 边缘 TCP 是死的（21 秒连不上）；同一时刻问 119.29.29.29 拿到
+        // 199.232.161.242（79ms 是活的）、问 8.8.8.8 拿到 151.101.x.242 四条。
+        // 只拿到一个 IP 时，上面那个"逐个换 IP 重试"的循环根本无从换起，下载就整体
+        // 失败 —— 补上其它解析器给出的兄弟节点，这个循环才真正有意义。
+        ips = await ExpandCandidatesAsync(host, ips, ct);
 
         if (ips.Length <= 1) return ips;
 
@@ -280,6 +330,141 @@ public sealed class ModDownloader : IDisposable
 
         // 好的在前；全挂了就保持原序（让上层自己报错，错误更直观）
         return good.Count > 0 ? [.. good, .. bad] : ips;
+    }
+
+    /// <summary>
+    /// 额外问几个公共解析器，把同一个主机名的兄弟节点捞回来。
+    ///
+    /// 只在候选很少（≤2 条）或系统解析完全失败时才问 —— 正常网络下不能白花这几百毫秒。
+    /// 主机的"拓扑感"还是系统解析器最准，所以补进来的永远排在它后面。
+    /// </summary>
+    private static readonly string[] ExtraDnsServers = ["119.29.29.29", "223.5.5.5", "8.8.8.8"];
+
+    private static async Task<System.Net.IPAddress[]> ExpandCandidatesAsync(
+        string host, System.Net.IPAddress[] current, CancellationToken ct)
+    {
+        // 已经是 IP 字面量，或者候选本来就够多 —— 不用问
+        if (System.Net.IPAddress.TryParse(host, out _)) return current;
+        if (current.Length > 2) return current;
+
+        var batches = await Task.WhenAll(
+            ExtraDnsServers.Select(server => QueryARecordsAsync(server, host, ct)));
+
+        var merged = new List<System.Net.IPAddress>(current);
+        foreach (var ip in batches.SelectMany(b => b))
+            if (!merged.Any(x => x.Equals(ip)))
+                merged.Add(ip);
+
+        // 别贪多：候选太多会把"逐个试"拖成几十秒
+        return [.. merged.Take(8)];
+    }
+
+    /// <summary>
+    /// 用指定解析器查 A 记录。
+    ///
+    /// 自己发 UDP 查询是因为 .NET 的 <c>Dns</c> 类只能问系统配置的解析器，
+    /// 而为一个补手引一个 DNS 库不值得。
+    ///
+    /// 超时、查不到、响应被截断一律返回空列表 —— 这层只负责"多给几个候选"，
+    /// 它自己出错绝不能影响正常下载。
+    /// </summary>
+    private static async Task<List<System.Net.IPAddress>> QueryARecordsAsync(
+        string server, string host, CancellationToken ct)
+    {
+        var found = new List<System.Net.IPAddress>();
+
+        try
+        {
+            using var udp = new System.Net.Sockets.UdpClient();
+            udp.Connect(server, 53);
+
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            linked.CancelAfter(TimeSpan.FromSeconds(2));
+
+            var query = BuildDnsQuery(host);
+            await udp.SendAsync(query, linked.Token);
+
+            var datagram = await udp.ReceiveAsync(linked.Token);
+            ParseDnsAnswers(datagram.Buffer, found);
+        }
+        catch
+        {
+            // 问不到就当这个解析器不存在
+        }
+
+        return found;
+    }
+
+    private static byte[] BuildDnsQuery(string host)
+    {
+        var buffer = new List<byte>
+        {
+            0x5A, 0x1B,                     // 事务 ID，随便
+            0x01, 0x00,                     // 标准查询 + 期望递归
+            0x00, 0x01,                     // QDCOUNT
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        };
+
+        foreach (var label in host.Split('.', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var bytes = System.Text.Encoding.ASCII.GetBytes(label);
+            var length = Math.Min(bytes.Length, 63);
+            buffer.Add((byte)length);
+            buffer.AddRange(bytes.Take(length));
+        }
+
+        buffer.Add(0x00);                                   // QNAME 结束
+        buffer.AddRange(new byte[] { 0x00, 0x01 });         // QTYPE = A
+        buffer.AddRange(new byte[] { 0x00, 0x01 });         // QCLASS = IN
+
+        return [.. buffer];
+    }
+
+    /// <summary>把响应里所有 A 记录的 IPv4 抠出来。格式不对就当没有，不抛。</summary>
+    private static void ParseDnsAnswers(byte[] data, List<System.Net.IPAddress> into)
+    {
+        if (data.Length < 12) return;
+
+        var answerCount = (data[6] << 8) | data[7];
+        if (answerCount <= 0) return;
+
+        // 跳过 question 段：QNAME + QTYPE(2) + QCLASS(2)
+        var offset = SkipDnsName(data, 12);
+        if (offset < 0 || offset + 4 > data.Length) return;
+        offset += 4;
+
+        for (var i = 0; i < answerCount && offset + 10 <= data.Length; i++)
+        {
+            offset = SkipDnsName(data, offset);
+            if (offset < 0 || offset + 10 > data.Length) return;
+
+            var type = (data[offset] << 8) | data[offset + 1];
+            var rdLength = (data[offset + 8] << 8) | data[offset + 9];
+            offset += 10;
+
+            if (offset + rdLength > data.Length) return;
+
+            if (type == 1 && rdLength == 4)
+                into.Add(new System.Net.IPAddress(data.AsSpan(offset, 4)));
+
+            offset += rdLength;
+        }
+    }
+
+    /// <summary>跳过一段域名。压缩指针只占 2 字节。返回下一段的偏移，越界返回 -1。</summary>
+    private static int SkipDnsName(byte[] data, int offset)
+    {
+        while (true)
+        {
+            if (offset >= data.Length) return -1;
+
+            var length = data[offset];
+
+            if (length == 0) return offset + 1;
+            if ((length & 0xC0) == 0xC0) return offset + 2;
+
+            offset += 1 + length;
+        }
     }
 
     /// <summary>CurseForge API key。未设置时 CurseForge 相关方法直接返回空。</summary>
