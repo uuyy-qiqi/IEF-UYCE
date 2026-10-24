@@ -37,18 +37,38 @@ public sealed class SkinHeadView : FrameworkElement
         set => SetValue(HeadProperty, value);
     }
 
-    /// <summary>正面那一块的边长（像素）。整体宽度是它的 2 倍、高度 1.5 倍。</summary>
+    /// <summary>正面那一块的边长（像素）。3D 模式整体宽度是它的 2 倍、高度 1.5 倍；平铺模式就是边长本身。</summary>
     public double Size
     {
         get => (double)GetValue(SizeProperty);
         set => SetValue(SizeProperty, value);
     }
 
+    public static readonly DependencyProperty FlatProperty =
+        DependencyProperty.Register(
+            nameof(Flat), typeof(bool), typeof(SkinHeadView),
+            new FrameworkPropertyMetadata(
+                false,
+                FrameworkPropertyMetadataOptions.AffectsMeasure | FrameworkPropertyMetadataOptions.AffectsRender));
+
+    /// <summary>
+    /// 平铺模式：只画正面那张脸（含帽檐层）填满整个正方形，不画等距的顶面和侧面。
+    ///
+    /// PCL CE 的头像就是这种平铺的 2D 脸 —— 8×8 像素直接最近邻放大成一块方脸。
+    /// 为什么默认用它：等距 3D 在 76px 这种尺寸下，侧面被压到 38px 宽再斜切，
+    /// 细节全糊在一起，看上去就是一团脏色；平铺的方脸干净得多。
+    /// </summary>
+    public bool Flat
+    {
+        get => (bool)GetValue(FlatProperty);
+        set => SetValue(FlatProperty, value);
+    }
+
     protected override Size MeasureOverride(Size availableSize)
     {
         var s = Size;
         if (s <= 0) return new Size(0, 0);
-        return new Size(s * 2, s * 1.5);
+        return Flat ? new Size(s, s) : new Size(s * 2, s * 1.5);
     }
 
     protected override void OnRender(DrawingContext dc)
@@ -60,6 +80,19 @@ public sealed class SkinHeadView : FrameworkElement
         // 像素画必须最近邻放大，否则 8×8 会糊成一团
         RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.NearestNeighbor);
         RenderOptions.SetEdgeMode(this, EdgeMode.Aliased);
+
+        if (Flat)
+        {
+            var rect = new Rect(0, 0, s, s);
+            dc.DrawImage(head.Face, rect);
+            if (head.HatFace is not null)
+                dc.DrawImage(head.HatFace, rect);
+
+            var edge = new Pen(new SolidColorBrush(Color.FromArgb(30, 0, 0, 0)), 1);
+            edge.Freeze();
+            dc.DrawRectangle(null, edge, rect);
+            return;
+        }
 
         var half = s / 2;
         var quarter = s / 4;

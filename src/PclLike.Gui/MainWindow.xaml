@@ -7,6 +7,8 @@
         Icon="Assets/pclike.png"
         MinHeight="560" MinWidth="900"
         Background="{StaticResource BgBrush}"
+        WindowStyle="None"
+        AllowsTransparency="True"
         WindowStartupLocation="CenterScreen"
         UseLayoutRounding="True" SnapsToDevicePixels="True"
         TextOptions.TextFormattingMode="Display"
@@ -15,6 +17,17 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d">
+
+  <WindowChrome.WindowChrome>
+    <!-- 无边框窗口：原生标题栏和自绘顶栏会重复（顶栏里那对最小化/关闭按钮
+         本来就是照无边框画的），所以干脆把原生的一整条去掉。
+         CaptionHeight=0 → 整个窗口都是客户区，拖动由顶栏自己处理；
+         ResizeBorderThickness 留着，边缘还能拖动改大小；
+         GlassFrameThickness=1 → 让 DWM 照常画外框和投影，窗口才浮得起来。 -->
+    <WindowChrome CaptionHeight="0" ResizeBorderThickness="6"
+                  GlassFrameThickness="1" CornerRadius="0"
+                  UseAeroCaptionButtons="False"/>
+  </WindowChrome.WindowChrome>
 
   <Window.Resources>
     <!-- ══════════════════════════════════════════════════════════
@@ -50,13 +63,13 @@
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="*"/>
-      <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
 
     <!-- ══════════════════════════════════════════════════════════
          顶栏：蓝色底 + 居中四个大页签 + 右侧账号/窗口按钮
          ══════════════════════════════════════════════════════════ -->
-    <Border Grid.Row="0" Background="{StaticResource PrimaryBrush}" Padding="0">
+    <Border Grid.Row="0" Background="{StaticResource TopBarBrush}" Padding="0"
+            MouseLeftButtonDown="TopBar_MouseDown">
       <Grid Height="52">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto"/>
@@ -95,6 +108,24 @@
         <!-- 右：账号入口 + 窗口控制 -->
         <StackPanel Grid.Column="2" Orientation="Horizontal"
                     VerticalAlignment="Center" Margin="0,0,8,0">
+
+          <!-- 状态 + 进度。原来这一块占着窗口底部一整条（旁边还挂着一个日志抽屉），
+               压在左栏的启动按钮下面真的碍眼。现在整个搬进顶栏：
+               进度条只在忙的时候出现，状态文字平时就一句「就绪」，
+               想翻历史看日志去 工具 → 百宝箱 → 启动器日志（那是独立窗口）。 -->
+          <StackPanel x:Name="TopBarStatus" Orientation="Horizontal"
+                      VerticalAlignment="Center" Margin="0,0,14,0">
+            <ProgressBar x:Name="TopProgress" Style="{StaticResource ThinProgress}"
+                         Width="76" VerticalAlignment="Center"
+                         Visibility="{Binding IsBusy, Converter={StaticResource BoolVis}}"
+                         Value="{Binding ProgressValue, Mode=OneWay}"
+                         Maximum="{Binding ProgressMax, Mode=OneWay}"
+                         IsIndeterminate="{Binding IsProgressIndeterminate, Mode=OneWay}"/>
+            <TextBlock x:Name="TopStatusText" Text="{Binding StatusText}" FontSize="11.5"
+                       Foreground="#D8E5FF" VerticalAlignment="Center" Margin="8,0,0,0"
+                       MaxWidth="260" TextTrimming="CharacterEllipsis"
+                       ToolTip="{Binding StatusText}"/>
+          </StackPanel>
 
           <Button x:Name="AccountButton" Click="Account_Click"
                   Background="Transparent" BorderThickness="0" Padding="8,4"
@@ -141,6 +172,24 @@
             </Button.Template>
           </Button>
 
+          <!-- 最大化 / 还原。原生标题栏去掉以后这个按钮是唯一的最大化入口，所以必须有。 -->
+          <Button x:Name="MaxButton" Click="Maximize_Click" Cursor="Hand" Background="Transparent"
+                  BorderThickness="0" Width="34" Height="34" ToolTip="最大化 / 还原">
+            <Button.Template>
+              <ControlTemplate TargetType="Button">
+                <Border x:Name="Bd" Background="Transparent">
+                  <TextBlock x:Name="Glyph" Text="&#xE922;" FontFamily="Segoe MDL2 Assets" FontSize="11"
+                             Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <ControlTemplate.Triggers>
+                  <Trigger Property="IsMouseOver" Value="True">
+                    <Setter TargetName="Bd" Property="Background" Value="#30FFFFFF"/>
+                  </Trigger>
+                </ControlTemplate.Triggers>
+              </ControlTemplate>
+            </Button.Template>
+          </Button>
+
           <Button Click="Close_Click" Cursor="Hand" Background="Transparent"
                   BorderThickness="0" Width="34" Height="34">
             <Button.Template>
@@ -171,37 +220,29 @@
       </Grid.ColumnDefinitions>
 
       <!-- ── 左栏 ──
-           下载/设置/工具页是分组导航；启动页换成人卡。PCL 的启动页左栏放的是头像 + 昵称 + 启动按钮，导航在这页让位给玩家信息。 -->
-      <Grid Grid.Column="0">
+           上面常驻人卡，下面按大页签二选一：非启动页是分组导航，启动页让位给启动按钮。
+           人卡不画卡片底、不画边框，只留头像 + 名字，直接浮在毛玻璃上。 -->
+      <Border Grid.Column="0" Background="{StaticResource RailBrush}"
+              BorderBrush="{StaticResource BorderBrush2}" BorderThickness="0,0,1,0">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition x:Name="PlayerSection" Height="Auto"/>
+            <RowDefinition x:Name="NavSection" Height="*"/>
+          </Grid.RowDefinitions>
 
-        <!-- 导航 -->
-        <Border x:Name="NavHost" Background="{StaticResource CardBrush}"
-                BorderBrush="{StaticResource BorderBrush2}" BorderThickness="0,0,1,0">
-          <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,4,0,12">
-            <StackPanel x:Name="NavPanel">
-              <!-- 内容随当前大页签变化，由代码切换 -->
-            </StackPanel>
-          </ScrollViewer>
-        </Border>
-
-        <!-- 人卡 -->
-        <Border x:Name="PlayerHost" Visibility="Collapsed"
-                Background="{StaticResource CardBrush}"
-                BorderBrush="{StaticResource BorderBrush2}" BorderThickness="0,0,1,0">
-          <Grid>
-            <Grid.RowDefinitions>
-              <RowDefinition Height="*"/>
-              <RowDefinition Height="Auto"/>
-            </Grid.RowDefinitions>
-
-            <!-- 头像 + 昵称 + 验证状态。整块可点：点一下进账号面板。 -->
-            <Button Grid.Row="0" Click="Account_Click" Cursor="Hand"
+          <!-- 人卡：四个大页签下都在 —— 换页不该把玩家身份藏起来。
+               启动页里它是"上半格垂直居中"（和 PCL CE 一样），其它页回到顶部、
+               把高度让给导航列表；这两件事由 ShowTopTab 切 RowDefinition 完成。 -->
+          <Border x:Name="PlayerHost" Grid.Row="0" Background="Transparent"
+                  VerticalAlignment="Top">
+            <Button Click="Account_Click" Cursor="Hand"
                     Background="Transparent" BorderThickness="0"
-                    HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+                    HorizontalAlignment="Stretch" VerticalAlignment="Center"
+                    ToolTip="点击切换账号">
               <Button.Template>
                 <ControlTemplate TargetType="Button">
                   <Border x:Name="Bd" Background="Transparent">
-                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Top"/>
                   </Border>
                   <ControlTemplate.Triggers>
                     <Trigger Property="IsMouseOver" Value="True">
@@ -211,30 +252,47 @@
                 </ControlTemplate>
               </Button.Template>
 
-              <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
-                          Margin="12,0,12,0">
-                <!-- 3D 皮肤头像。正版/离线都尽量查真实皮肤，查不到就内置 Steve。 -->
-                <skins:SkinHeadView x:Name="PlayerHead" Size="84"
-                                    HorizontalAlignment="Center"/>
+              <StackPanel Margin="16,18,16,14">
+                <!-- 头像位：真实皮肤走 SkinHeadView（平铺的 2D 方脸，PCL CE 就长这样），
+                     查不到皮肤就显示 avatar_fallback.png 那张方脸。
+                     两张图叠在同一格里靠 Visibility 切换 —— 这样猫图能用高质量缩放，
+                     皮肤图仍然保持最近邻（8×8 放大成 92px，插值一糊就毁了）。 -->
+                <Grid HorizontalAlignment="Center">
+                  <Image x:Name="PlayerFallback" Width="92" Height="92"
+                         Stretch="UniformToFill"
+                         RenderOptions.BitmapScalingMode="HighQuality"
+                         Source="pack://application:,,,/Assets/avatar_fallback.png"/>
+
+                  <skins:SkinHeadView x:Name="PlayerHead" Size="92" Flat="True"
+                                      Visibility="Collapsed"/>
+                </Grid>
 
                 <TextBlock x:Name="PlayerNameText" Text="{Binding Username}"
-                           FontSize="16" FontWeight="SemiBold"
+                           FontSize="15.5" FontWeight="SemiBold"
                            Foreground="{StaticResource TextBrush}"
-                           HorizontalAlignment="Center" Margin="0,14,0,0"
-                           MaxWidth="170" TextTrimming="CharacterEllipsis"/>
+                           HorizontalAlignment="Center" Margin="0,10,0,0"
+                           MaxWidth="184" TextTrimming="CharacterEllipsis"/>
 
                 <TextBlock x:Name="PlayerAuthText" Text="离线模式"
                            FontSize="11.5" Foreground="{StaticResource TextMutedBrush}"
-                           HorizontalAlignment="Center" Margin="0,4,0,0"/>
-
-                <TextBlock Text="点击切换账号" FontSize="10.5"
-                           Foreground="{StaticResource TextMutedBrush}" Opacity="0.7"
-                           HorizontalAlignment="Center" Margin="0,10,0,0"/>
+                           HorizontalAlignment="Center" Margin="0,3,0,0"/>
               </StackPanel>
             </Button>
+          </Border>
 
-            <!-- 底部：启动按钮 + 两个实例按钮 -->
-            <StackPanel Grid.Row="1" Margin="14,0,14,16">
+          <Grid Grid.Row="1">
+            <!-- 导航（非启动页） -->
+            <Border x:Name="NavHost" Background="Transparent">
+              <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,4,0,12">
+                <StackPanel x:Name="NavPanel">
+                  <!-- 内容随当前大页签变化，由代码切换 -->
+                </StackPanel>
+              </ScrollViewer>
+            </Border>
+
+            <!-- 启动按钮区（只在启动页） -->
+            <StackPanel x:Name="LaunchActions" Visibility="Collapsed"
+                        VerticalAlignment="Bottom" Margin="14,0,14,16">
               <Button x:Name="RunButton" Style="{StaticResource HeroButton}"
                       Click="Run_Click" IsEnabled="{Binding CanLaunch}"/>
 
@@ -250,8 +308,8 @@
               </Grid>
             </StackPanel>
           </Grid>
-        </Border>
-      </Grid>
+        </Grid>
+      </Border>
 
       <!-- ── 右：内容区 ── -->
       <Grid Grid.Column="1">
@@ -1592,82 +1650,5 @@
       </Grid>
     </Grid>
 
-    <!-- ══════════════════════════════════════════════════════════
-         底部：进度条 + 日志抽屉
-         ══════════════════════════════════════════════════════════ -->
-    <Border Grid.Row="2" Background="{StaticResource CardBrush}"
-            BorderBrush="{StaticResource BorderBrush2}" BorderThickness="0,1,0,0">
-      <StackPanel>
-        <!-- 进度条 -->
-        <ProgressBar Style="{StaticResource ThinProgress}"
-                     Value="{Binding ProgressValue, Mode=OneWay}"
-                     Maximum="{Binding ProgressMax, Mode=OneWay}"
-                     IsIndeterminate="{Binding IsProgressIndeterminate, Mode=OneWay}"
-                     Margin="0"/>
-
-        <!-- 日志抽屉 -->
-        <ToggleButton x:Name="LogToggle" Click="LogToggle_Click" Cursor="Hand"
-                      Background="Transparent" BorderThickness="0">
-          <ToggleButton.Template>
-            <ControlTemplate TargetType="ToggleButton">
-              <Border Background="Transparent" Padding="16,6">
-                <Grid>
-                  <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="&#xE9D9;" FontFamily="Segoe MDL2 Assets" FontSize="11"
-                               Foreground="{StaticResource TextMutedBrush}"
-                               VerticalAlignment="Center" Margin="0,0,7,0"/>
-                    <TextBlock Text="{Binding StatusText}" FontSize="11.5"
-                               Foreground="{StaticResource TextMutedBrush}"
-                               VerticalAlignment="Center"/>
-                  </StackPanel>
-                  <TextBlock x:Name="Chev" Text="&#xE70E;" FontFamily="Segoe MDL2 Assets"
-                             FontSize="10" Foreground="{StaticResource TextMutedBrush}"
-                             HorizontalAlignment="Right" VerticalAlignment="Center"/>
-                </Grid>
-              </Border>
-              <ControlTemplate.Triggers>
-                <Trigger Property="IsChecked" Value="True">
-                  <Setter TargetName="Chev" Property="Text" Value="&#xE70D;"/>
-                </Trigger>
-              </ControlTemplate.Triggers>
-            </ControlTemplate>
-          </ToggleButton.Template>
-        </ToggleButton>
-
-        <!-- 日志列表 -->
-        <ListBox x:Name="LogList" ItemsSource="{Binding LogLines}"
-                 Background="Transparent" BorderThickness="0"
-                 MaxHeight="180" Visibility="Collapsed"
-                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                 VirtualizingPanel.IsVirtualizing="True"
-                 VirtualizingPanel.VirtualizationMode="Recycling"
-                 Margin="0,0,0,4">
-          <ListBox.ItemContainerStyle>
-            <Style TargetType="ListBoxItem">
-              <Setter Property="Padding" Value="0"/>
-              <Setter Property="Template">
-                <Setter.Value>
-                  <ControlTemplate TargetType="ListBoxItem">
-                    <ContentPresenter/>
-                  </ControlTemplate>
-                </Setter.Value>
-              </Setter>
-            </Style>
-          </ListBox.ItemContainerStyle>
-          <ListBox.ItemTemplate>
-            <DataTemplate DataType="{x:Type local:LogLine}">
-              <StackPanel Orientation="Horizontal" Margin="16,1,16,1">
-                <TextBlock Text="{Binding Timestamp}" FontSize="11.5"
-                           FontFamily="{StaticResource MonoFont}"
-                           Foreground="{StaticResource TextMutedBrush}" Margin="0,0,8,0"/>
-                <TextBlock Text="{Binding Text}" FontSize="11.5"
-                           FontFamily="{StaticResource MonoFont}"
-                           Foreground="{Binding Brush}" TextWrapping="Wrap"/>
-              </StackPanel>
-            </DataTemplate>
-          </ListBox.ItemTemplate>
-        </ListBox>
-      </StackPanel>
-    </Border>
-  </Grid>
+    </Grid>
 </Window>

@@ -9,8 +9,12 @@
          主色        亮蓝，用在顶栏、选中态、主按钮
          描边        很淡的蓝灰，只用来分隔       ════════════════════════════════════════════════════════════ -->
 
-  <Color x:Key="BgColor">#F0F4FA</Color>
-  <Color x:Key="CardColor">#FFFFFF</Color>
+  <!-- 底色带 alpha 是故意的：窗口后面由 DWM 画一层亚克力模糊
+       （见 WindowBackdrop.cs），留出透明度那层模糊才看得见。
+       透明度不能给太狠 —— 字要始终压得住背景，所以窗口底 40%、卡片 76%，
+       越"上层"的东西越不透明，文字永远不会糊。 -->
+  <Color x:Key="BgColor">#66F0F4FA</Color>
+  <Color x:Key="CardColor">#C2FFFFFF</Color>
   <Color x:Key="PrimaryColor">#1A6FD4</Color>
   <Color x:Key="PrimaryHiColor">#4A9BE8</Color>
   <Color x:Key="PrimaryLoColor">#14589F</Color>
@@ -38,6 +42,14 @@
   <SolidColorBrush x:Key="DangerBrush" Color="{StaticResource DangerColor}"/>
   <SolidColorBrush x:Key="SuccessBrush" Color="{StaticResource SuccessColor}"/>
   <SolidColorBrush x:Key="WarnBrush" Color="{StaticResource WarnColor}"/>
+
+  <!-- 左栏：比卡片更透一点，让侧栏和内容区在毛玻璃上能分得出来 -->
+  <Color x:Key="RailColor">#47FFFFFF</Color>
+  <SolidColorBrush x:Key="RailBrush" Color="{StaticResource RailColor}"/>
+
+  <!-- 顶栏：主色留一点点透明，毛玻璃那层模糊能微微透上来 -->
+  <Color x:Key="TopBarColor">#CC1A6FD4</Color>
+  <SolidColorBrush x:Key="TopBarBrush" Color="{StaticResource TopBarColor}"/>
 
   <!-- 兼容旧键名，免得改一处漏一处 -->
   <SolidColorBrush x:Key="FgBrush" Color="{StaticResource TextColor}"/>
