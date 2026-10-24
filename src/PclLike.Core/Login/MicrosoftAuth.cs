@@ -39,36 +39,49 @@ public sealed class MicrosoftAuth
     /// <summary>
     /// 客户端的 client_id。
     ///
-    /// ## 为什么必须自己注册
+    /// ## 这里踩过的坑，写下来免得再踩
     ///
-    /// 这里不能硬编码任何"公共"client_id。查证过的事实：
+    /// 一开始的结论是"必须每个用户自己注册 Azure 应用"，理由是：流传的
+    /// `00000000402b5328` 打 `login.microsoftonline.com/consumers` 会返回
+    /// `AADSTS700016: Application ... was not found in the directory`。
     ///
-    /// - 广为流传的 `00000000402b5328` 是 **MSA v1 时代**的 ID，
-    ///   打 `login.microsoftonline.com/consumers` 会返回
-    ///   `AADSTS700016: Application ... was not found in the directory`。
-    ///   它属于旧的 live.com 体系，不是 AAD 应用，v2 端点不认。
-    /// - 开源启动器（如 HMCL）的做法是 **client_id 由调用方传入**
-    ///   （`options.callback.getClientId()`），代码里不硬编码。
-    ///   因为硬编码别人的 ID 等于盗用对方的应用配额，
-    ///   微软一旦因滥用封禁该应用，所有使用者一起挂。
-    /// - 官方启动器的 client_id 未公开，也无法用于第三方。
+    /// **那个推理错在把"不属于 AAD"当成了"不能用"。** 实测下来：
     ///
-    /// 所以正确做法是**每个用户注册自己的 Azure 应用**（免费，约 3 分钟）：
+    /// - `00000000402b5328` 在 `login.live.com` 上是**好的** —— 授权地址直接返回
+    ///   微软的登录页（实测 30KB 正常页面），而不存在的 GUID 会返回 3.4KB 的错误页。
+    /// - 自己注册的 Azure 应用（Entra + 设备码）能一路走到 XSTS，但最后
+    ///   `login_with_xbox` 被 Minecraft 拒：`403 Invalid app registration`。
+    ///   这不是账号没买游戏，是 Minecraft 不认这个应用。
     ///
-    /// 1. 打开 https://portal.azure.com → 「Microsoft Entra ID」
-    /// 2. 左侧「应用注册」→「新注册」
-    /// 3. 名称随意（如 `MyLauncher`）
-    /// 4. **受支持的账户类型选「仅个人 Microsoft 账户」**
-    ///    （这一步最关键：只有它才能登 Minecraft 的消费者账号）
-    /// 5. 注册后复制「应用程序(客户端) ID」
-    /// 6. 左侧「身份验证」→ 拉到最底「允许公共客户端流」→ **是** → 保存
+    /// 也就是说：**能走完的是 Live Connect 那条老路**，本机装着的 PCL CE 也是走它
+    /// （日志里是 `login.live.com/oauth20_token.srf`）。
     ///
-    /// 然后把 ID 填进启动器设置即可。不需要 client secret
-    /// （device code 属于公共客户端流，配 secret 反而不安全）。
+    /// 所以默认用那个公开的桌面应用号。设置里那种"自己注册的 Azure 应用 GUID"
+    /// 会被构造函数忽略掉（见 <see cref="CustomClientIdIgnored"/>）——
+    /// 它必然失败，留着只会让用户反复试。
     ///
-    /// 相关常量见 <see cref="ConfigStore.MicrosoftClientId"/>。
+    /// UserKey 相关见 <see cref="ConfigStore.MicrosoftClientId"/>。
     /// </summary>
-    public const string DefaultClientId = "";
+    public const string DefaultClientId = LiveClientId;
+
+    /// <summary>
+    /// 默认用的应用号：微软自己那个公开的桌面应用（Xbox 集成用的那个）。
+    ///
+    /// 这个值不是随手抄的。实测过一件事：**能走完的正版登录走的是
+    /// `login.live.com`（老的 Live Connect），不是 `login.microsoftonline.com`。**
+    ///
+    /// - Entra（login.microsoftonline.com）+ 自己注册的 Azure 应用：设备码能拿到、
+    ///   Xbox Live 能过、XSTS 也能过，但最后一步 `login_with_xbox` 会被 Minecraft
+    ///   拒掉 —— `403 Invalid app registration`。同一套代码把 client_id 换成不存在的
+    ///   GUID，会在更早一步就 401；说明 403 那一层是 Minecraft 在查"这个应用我认不认"，
+    ///   而它只认注册过的应用 —— 自己注册的 Azure 应用不在里面。
+    /// - Live Connect（login.live.com）用的是微软自己的公开应用号，Minecraft 认它。
+    ///   本机的 PCL CE 日志里就是 `login.live.com/oauth20_token.srf`，走通了。
+    ///
+    /// 所以默认走 Live Connect。设备码 + Entra 那套代码留着（能跑到 XSTS，
+    /// 排查时有用），但从产品配置里已经走不到了 —— 构造函数会把 GUID 换回来。
+    /// </summary>
+    private const string LiveClientId = "00000000402b5328";
 
     private const string DeviceCodeUrl = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
     private const string TokenUrl = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
@@ -78,6 +91,19 @@ public sealed class MicrosoftAuth
     private const string McProfileUrl = "https://api.minecraftservices.com/minecraft/profile";
     private const string McEntitlementsUrl = "https://api.minecraftservices.com/entitlements/mcstore";
 
+    /// <summary>Live Connect 的三个端点（登录页、换令牌、回跳地址）。</summary>
+    private const string LiveAuthorizeUrl = "https://login.live.com/oauth20_authorize.srf";
+    private const string LiveTokenUrl = "https://login.live.com/oauth20_token.srf";
+
+    /// <summary>
+    /// 回跳地址。这是那个公开应用号预先注册好的桌面回跳页 —— 登录完微软会跳到它，
+    /// 并把 code 放在 URL 上。我们不去"打开"这个页面，只是盯着地址里有没有 code。
+    /// </summary>
+    private const string LiveRedirectUrl = "https://login.live.com/oauth20_desktop.srf";
+
+    /// <summary>Live Connect 的 scope 写法（老服务，拿不到 XBL token 就得重来）。</summary>
+    private const string LiveScope = "XboxLive.signin XboxLive.offline_access";
+
     /// <summary>请求的 scope。加上 XboxLive.signin 才能换 XBL token。</summary>
     private const string Scope = "XboxLive.signin offline_access";
 
@@ -86,8 +112,27 @@ public sealed class MicrosoftAuth
     public MicrosoftAuth(string? clientId = null)
     {
         var id = string.IsNullOrWhiteSpace(clientId) ? DefaultClientId : clientId.Trim();
+
+        // 自己注册的 Entra 应用号（GUID 长相）用来登录是死路：实测能一路走到 XSTS，
+        // 但最后 `login_with_xbox` 会被 Minecraft 拒 —— `403 Invalid app registration`。
+        // 它不是账号问题，是 Minecraft 不认这个应用。
+        //
+        // 所以见到 GUID 就退回内置应用号，并把这件事记下来告诉界面。
+        // 不能把一个必然失败的设置静静地留在用户配置里让他反复试。
+        if (!id.StartsWith("00000000", StringComparison.Ordinal))
+        {
+            CustomClientIdIgnored = true;
+            id = DefaultClientId;
+        }
+
         _clientId = id;
     }
+
+    /// <summary>
+    /// 配置里那个自定义应用号被忽略了（它是 Entra GUID，登不进游戏）。
+    /// 界面据此给用户一句说明，别让他以为自己填的东西生效了。
+    /// </summary>
+    public bool CustomClientIdIgnored { get; }
 
     /// <summary>
     /// client_id 是否已配置。GUI 在点"登录"前先查这个，
@@ -95,22 +140,19 @@ public sealed class MicrosoftAuth
     /// </summary>
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_clientId);
 
-    /// <summary>缺 client_id 时抛的异常，信息里直接带注册步骤。</summary>
+    /// <summary>
+    /// client_id 是空的时候抛的异常。
+    /// 
+    /// 正常情况下走不到这里（构造函数总会退回内置应用号），留着是为了万一
+    /// <see cref="DefaultClientId"/> 被清掉时有个能看懂的报错。
+    /// </summary>
     public static InvalidOperationException MissingClientIdError() => new(
-        "还没有配置 Microsoft 应用的客户端 ID，无法登录正版。\n\n" +
-        "这是因为正版登录需要你自己的 Azure 应用，公共 ID 用不了" +
-        "（微软已停用旧的公共客户端 ID）。注册是免费的，约 3 分钟：\n\n" +
-        "1. 打开 https://entra.microsoft.com 并登录\n" +
-        "2. 左侧「应用注册」→「新注册」\n" +
-        "3. 名称随便填（如 PclLike）\n" +
-        "4. 帐户类型选「任何组织目录中的帐户和个人 Microsoft 帐户」\n" +
-        "   —— 必须选这个，个人 @outlook.com 账号才登得进来；\n" +
-        "      选「仅此组织目录」会报 AADSTS50020\n" +
-        "5. 点注册，复制「应用程序(客户端) ID」\n" +
-        "6. 左侧「身份验证」→ 最下方「允许公共客户端流」选「是」→ 保存\n" +
-        "   —— 这步不能漏，否则设备码登录会报 AADSTS70002\n" +
-        "7. 回到启动器设置，把客户端 ID 粘进去\n\n" +
-        "不想注册也没关系：用离线模式一样能玩单机和大部分服务器。");
+        "登录用的应用号是空的，无法登录正版。\n\n" +
+        "启动器内置了一个可用的公开应用号，settings 里把它清空就会变成这样。\n" +
+        "把设置里「Microsoft 应用号」那一栏留空即可（留空就是用内置的）。\n\n" +
+        "另：自己注册的 Azure 应用号**不能**用来登录正版 —— 实测能走到最后一步，\n" +
+        "但会被 Minecraft 拒（403 Invalid app registration）。所以不用去注册。\n\n" +
+        "不想登录也没关系：离线模式一样能玩单机和大部分服务器。");
 
     /// <summary>
     /// 把微软返回的 OAuth 错误翻译成用户能照着做的提示。
@@ -296,8 +338,16 @@ public sealed class MicrosoftAuth
         throw new TimeoutException("登录超时。请重新获取登录码。");
     }
 
-    /// <summary>用 refresh_token 换新的 access_token（不需要用户再操作）。</summary>
-    public async Task<MsToken> RefreshAsync(string refreshToken, CancellationToken ct = default)
+    /// <summary>
+    /// 用 refresh_token 换新的 access_token（不需要用户再操作）。
+    ///
+    /// 走哪个端点取决于应用号属于哪家：Live 应用只能去 login.live.com，Azure 应用
+    /// 只能去 Entra。用错了会被回 invalid_client，所以这里必须分派。
+    /// </summary>
+    public Task<MsToken> RefreshAsync(string refreshToken, CancellationToken ct = default)
+        => UsesLiveConnect ? RefreshLiveAsync(refreshToken, ct) : RefreshEntraAsync(refreshToken, ct);
+
+    private async Task<MsToken> RefreshEntraAsync(string refreshToken, CancellationToken ct)
     {
         using var client = NewClient();
         using var content = new FormUrlEncodedContent(new Dictionary<string, string>
@@ -318,6 +368,146 @@ public sealed class MicrosoftAuth
             ?? throw new InvalidOperationException("刷新响应无法解析");
 
         return new MsToken(dto.AccessToken ?? "", dto.RefreshToken ?? refreshToken, dto.ExpiresIn);
+    }
+
+    // ---------------------------------------------------------------
+    // 步骤 1~2：Live Connect —— 真正能走完的那条登录路
+    // ---------------------------------------------------------------
+
+    /// <summary>
+    /// 当前用的是不是 Live Connect（看应用号长什么样就够判断）。
+    /// 界面靠它决定走哪条登录路：Live 走内嵌浏览器，Entra 走设备码。
+    /// </summary>
+    public bool UsesLiveConnect => _clientId.StartsWith("00000000", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 拼出登录窗口要打开的授权地址。用户在窗口里登录完，微软会跳到
+    /// <see cref="LiveRedirectUrl"/>，那串地址里带着 code。
+    /// </summary>
+    public string BuildLiveAuthorizeUrl()
+    {
+        return LiveAuthorizeUrl +
+               $"?client_id={Uri.EscapeDataString(_clientId)}" +
+               "&response_type=code" +
+               $"&redirect_uri={Uri.EscapeDataString(LiveRedirectUrl)}" +
+               $"&scope={Uri.EscapeDataString(LiveScope)}" +
+               "&display=touch";
+    }
+
+    /// <summary>
+    /// 从登录窗口最终的地址里把 code 抠出来。还没登录完就返回 null；
+    /// 微软明确报了错就把错误原样抛出来 —— 这一层不该替用户猜。
+    /// </summary>
+    public static string? ReadCodeFromRedirect(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return null;
+
+        var code = QueryValue(url, "code");
+        if (!string.IsNullOrWhiteSpace(code)) return code;
+
+        var err = QueryValue(url, "error");
+        if (!string.IsNullOrWhiteSpace(err))
+        {
+            var desc = QueryValue(url, "error_description");
+            throw new InvalidOperationException(
+                $"登录被拒绝：{err}{(string.IsNullOrWhiteSpace(desc) ? "" : $"（{desc}）")}");
+        }
+
+        return null;
+    }
+
+    /// <summary>自己解析查询参数，不依赖 Uri 对畸形地址的容忍度。</summary>
+    private static string? QueryValue(string url, string key)
+    {
+        var q = url.IndexOf('?');
+        if (q < 0) return null;
+
+        foreach (var pair in url[(q + 1)..].Split('&'))
+        {
+            var eq = pair.IndexOf('=');
+            if (eq <= 0) continue;
+            if (!pair[..eq].Equals(key, StringComparison.OrdinalIgnoreCase)) continue;
+            return Uri.UnescapeDataString(pair[(eq + 1)..].Replace('+', ' '));
+        }
+        return null;
+    }
+
+    /// <summary>用授权码换 MS 令牌。</summary>
+    public async Task<MsToken> ExchangeLiveCodeAsync(string code, CancellationToken ct = default)
+    {
+        using var client = NewClient();
+        using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["grant_type"] = "authorization_code",
+            ["client_id"] = _clientId,
+            ["code"] = code,
+            ["redirect_uri"] = LiveRedirectUrl,
+            ["scope"] = LiveScope,
+        });
+
+        using var resp = await client.PostAsync(LiveTokenUrl, content, ct).ConfigureAwait(false);
+        var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+
+        if (!resp.IsSuccessStatusCode)
+            throw new InvalidOperationException(
+                $"授权码换取令牌失败（{resp.StatusCode}）：{TryReadError(body) ?? body.Trim()}");
+
+        var dto = JsonSerializer.Deserialize<TokenDto>(body, Json)
+            ?? throw new InvalidOperationException("换令牌响应无法解析");
+
+        if (string.IsNullOrWhiteSpace(dto.AccessToken))
+            throw new InvalidOperationException("换令牌响应里没有 access_token");
+
+        return new MsToken(dto.AccessToken!, dto.RefreshToken ?? "", dto.ExpiresIn);
+    }
+
+    /// <summary>
+    /// Live Connect 的刷新。refresh_token 是长期有效的 —— 所以这一个 code
+    /// 只在第一次登录时用得上，之后启动器都靠它自动续。
+    /// </summary>
+    public async Task<MsToken> RefreshLiveAsync(string refreshToken, CancellationToken ct = default)
+    {
+        using var client = NewClient();
+        using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["grant_type"] = "refresh_token",
+            ["client_id"] = _clientId,
+            ["refresh_token"] = refreshToken,
+            ["scope"] = LiveScope,
+        });
+
+        using var resp = await client.PostAsync(LiveTokenUrl, content, ct).ConfigureAwait(false);
+        var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+
+        if (!resp.IsSuccessStatusCode)
+            throw new InvalidOperationException(
+                $"刷新登录令牌失败（{resp.StatusCode}）：{TryReadError(body) ?? body.Trim()}");
+
+        var dto = JsonSerializer.Deserialize<TokenDto>(body, Json)
+            ?? throw new InvalidOperationException("刷新响应无法解析");
+
+        return new MsToken(dto.AccessToken ?? "", dto.RefreshToken ?? refreshToken, dto.ExpiresIn);
+    }
+
+    /// <summary>
+    /// 正版登录的完整入口（Live Connect 版）。
+    ///
+    /// <paramref name="requestCode"/> 由界面提供：把登录窗口打开、等用户登完，
+    /// 把地址里的 code 交回来。Core 不认识窗口，所以这里只管要一个 code。
+    /// </summary>
+    public async Task<McProfile> LoginWithLiveAsync(
+        Func<CancellationToken, Task<string?>> requestCode,
+        IProgress<string>? status = null,
+        CancellationToken ct = default)
+    {
+        status?.Report("正在打开微软登录窗口…");
+        var code = await requestCode(ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("登录窗口被关掉了，没有拿到授权码。");
+
+        status?.Report("正在换取登录令牌…");
+        var ms = await ExchangeLiveCodeAsync(code, ct).ConfigureAwait(false);
+
+        return await CompleteLoginAsync(ms, status, ct).ConfigureAwait(false);
     }
 
     // ---------------------------------------------------------------
@@ -436,8 +626,20 @@ public sealed class MicrosoftAuth
         var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
 
         if (!resp.IsSuccessStatusCode)
+        {
+            // 服务端在 body 里写明了原因，直接用原文。
+            //
+            // 这里以前自己猜了一句"这个账号可能没有购买 Minecraft: Java 版"，
+            // 实测那句话是错的 —— 403 的原文是 `Invalid app registration`，
+            // 说的是登录用的应用号不被 Minecraft 认可，跟账号买没买游戏无关。
+            // 猜错的提示会把用户带去查订单，白折腾。
+            var reason = TryReadText(body, "errorMessage") ?? body.Trim();
+            var extra = reason.Contains("Invalid app registration", StringComparison.OrdinalIgnoreCase)
+                ? "\n\n（这是说登录用的应用号不被 Minecraft 认可，不是账号问题。）"
+                : "";
             throw new InvalidOperationException(
-                $"Minecraft 登录失败（{resp.StatusCode}）。这个账号可能没有购买 Minecraft: Java 版。");
+                $"Minecraft 登录失败（{(int)resp.StatusCode}）：{reason}{extra}");
+        }
 
         var dto = JsonSerializer.Deserialize<McLoginDto>(body, Json);
         if (string.IsNullOrWhiteSpace(dto?.AccessToken))
@@ -534,6 +736,18 @@ public sealed class MicrosoftAuth
             using var doc = JsonDocument.Parse(body);
             if (!doc.RootElement.TryGetProperty(prop, out var e)) return null;
             return e.ValueKind == JsonValueKind.Number ? e.GetInt64() : long.TryParse(e.GetString(), out var v) ? v : null;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>取一个字符串字段；不是字符串或取不到都算 null（不抛）。</summary>
+    private static string? TryReadText(string body, string prop)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty(prop, out var e)) return null;
+            return e.ValueKind == JsonValueKind.String ? e.GetString() : null;
         }
         catch { return null; }
     }

@@ -20,10 +20,22 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 正版登录要一个内嵌浏览器：微软登录页有反爬/反自动化，拿 HTTP 请求模拟
+         登录走不通，必须真的把网页渲染出来让用户自己输。本机已装 WebView2 运行时
+         （C:\Program Files (x86)\Microsoft\EdgeWebView\Application），所以用它。
+         版本写成 1.0.* 让它取当前可用的最新稳定版，免得写死一个版本号过阵子还原不了。 -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.*" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- 打进程序集的资源：窗口图标用的 png，以及查不到皮肤时的默认 Steve 头像。
          用 pack URI 在 XAML / 代码里引用。 -->
     <Resource Include="Assets\pclike.png" />
     <Resource Include="Assets\default_skin.png" />
+    <!-- 查不到皮肤时显示的头像（用户挑的橘猫方脸）。
+         注意它和 default_skin.png 是两回事：后者是给 SkinService 当兜底的
+         标准 64×64 皮肤图，前者只负责"没皮肤可画时这张脸长什么样"。 -->
+    <Resource Include="Assets\avatar_fallback.png" />
 
     <!-- 生成脚本和预览图不进程序集，免得白塞一堆没用的图 -->
     <None Remove="Assets\_preview_*.png" />

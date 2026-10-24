@@ -43,6 +43,12 @@ public static class Program
             return E2ELaunch.Run(version);
         }
 
+        // 内嵌浏览器登录探针：PclLike.exe --login-probe [--wait 秒数]
+        // 验证 WebView2 能不能把微软登录页渲染出来（它不登录，只看页面）。
+        var loginIdx = Array.FindIndex(args, a => a.Equals("--login-probe", StringComparison.OrdinalIgnoreCase));
+        if (loginIdx >= 0)
+            return LoginProbe.Run(args.Skip(loginIdx).ToArray());
+
         // 常规启动：交给 WPF 的标准流程
         var app = new App();
         app.InitializeComponent();

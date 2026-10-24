@@ -25,6 +25,19 @@
       <Button x:Name="MsLoginButton" Content="使用 Microsoft 账号登录" Height="38"
               Style="{StaticResource FlatButton}" Click="MsLogin_Click"/>
 
+      <!-- 登错账号时的出路必须明写。
+           内嵌浏览器（WebView2）自己存着上一个微软账号的登录状态，重开登录页
+           会闷头进同一个账号、不给选账号的机会 —— 用户看到的现象就是"换不了"。 -->
+      <TextBlock FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"
+                 Foreground="{StaticResource MutedBrush}"
+                 Text="登错账号了？登录窗口右上角有「换个微软账号」，点它会先退出浏览器里记住的那个账号，再让你重新选。"/>
+
+      <!-- 设置里填了自注册的 Azure 应用时会亮出来。那句话必须说清楚，
+           不然用户会以为自己填的东西生效了，然后反复试一个注定失败的设置。 -->
+      <TextBlock x:Name="CustomIdNote" Visibility="Collapsed" TextWrapping="Wrap"
+                 FontSize="11" Margin="0,10,0,0"
+                 Foreground="{StaticResource WarnBrush}"/>
+
       <TextBlock Text="不想登录也可以，离线模式下填个名字就能玩单机。"
                  FontSize="11" TextWrapping="Wrap"
                  Foreground="{StaticResource MutedBrush}" Margin="0,12,0,0"/>
@@ -42,7 +55,16 @@
       </Grid>
     </StackPanel>
 
-    <!-- ═══ 登录中 · device code ═══ -->
+    <!-- ═══ 登录中 · 内嵌浏览器（正版）或 device code（自注册应用）═══ -->
+    <StackPanel Grid.Row="2" x:Name="BusyPanel" Margin="0,18,0,0" Visibility="Collapsed">
+      <TextBlock x:Name="BusyTitle" Text="正在登录…" FontSize="14" FontWeight="SemiBold"
+                 Foreground="{StaticResource FgBrush}"/>
+      <TextBlock x:Name="BusyStatus" Text="" FontSize="12" TextWrapping="Wrap"
+                 Foreground="{StaticResource MutedBrush}" Margin="0,8,0,0"/>
+      <ProgressBar Height="3" IsIndeterminate="True"
+                   Background="Transparent" BorderThickness="0" Margin="0,10,0,0"/>
+    </StackPanel>
+
     <StackPanel Grid.Row="2" x:Name="DevicePanel" Margin="0,18,0,0" Visibility="Collapsed">
       <TextBlock Text="请在浏览器中完成登录" FontSize="14" FontWeight="SemiBold"
                  Foreground="{StaticResource FgBrush}"/>

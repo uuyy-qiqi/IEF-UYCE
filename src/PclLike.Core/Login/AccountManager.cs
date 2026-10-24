@@ -92,7 +92,14 @@ public sealed class AccountManager
     {
         lock (_lock)
         {
-            Profile = new PlayerProfile(name, uuid, accessToken, true, refreshToken);
+            // 位置参数在这里是个陷阱：MicrosoftAuth.McProfile 的声明顺序是
+            // (Uuid, Name, ...)，而 PlayerProfile 是 (Name, Uuid, ...)。照抄
+            // 另一个类型的顺序写一次，就会把 uuid 当名字存进账号文件 —— 登录
+            // 看着成功，实际是个非法 uuid，游戏起来就是离线。所以两个调用点
+            // 一律用具名参数，让编译器替我们挡住顺序问题。
+            Profile = new PlayerProfile(
+                Name: name, Uuid: uuid, AccessToken: accessToken,
+                IsOnline: true, RefreshToken: refreshToken);
             Save();
         }
     }
@@ -130,7 +137,9 @@ public sealed class AccountManager
 
             lock (_lock)
             {
-                Profile = new PlayerProfile(profile.Uuid, profile.Name, profile.AccessToken, true, ms.RefreshToken);
+                Profile = new PlayerProfile(
+                    Name: profile.Name, Uuid: profile.Uuid, AccessToken: profile.AccessToken,
+                    IsOnline: true, RefreshToken: ms.RefreshToken);
                 Save();
             }
             return true;
