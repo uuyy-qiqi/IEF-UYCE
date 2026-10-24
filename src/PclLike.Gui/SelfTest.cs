@@ -378,6 +378,76 @@ public static class SelfTest
                 Check(finalJars == beforeJars.Count, "自检装的文件已清理（不留残留）", $"{finalJars} 个 jar");
             }
 
+            // 数据包栏：参数必须落成 mod + datapack 分类。
+            // Modrinth 没有 datapack 这个 project_type，写成 datapack 会被服务端
+            // 静默忽略（不报错，返回一堆 Mod）—— 所以这里盯死这两个值。
+            content.Activate(ContentTab.Datapack, autoSearch: false);
+            Check(content.ProjectType == "mod", "数据包栏发的是 project_type:mod", content.ProjectType);
+            Check(content.Category == "datapack", "数据包栏带 categories:datapack", content.Category);
+            Check(content.NeedsWorldPick, "数据包栏要选世界");
+
+            // 数据包是装到某个世界下面的 —— 这条路径必须真跑一遍，
+            // 因为它跟"装到实例目录"是两码事，写错了会装到实例根上。
+            var inst = vm.CurrentInstance();
+            var savesDir = System.IO.Path.Combine(inst.GameDir, "saves");
+            var testWorld = "自检数据包世界";
+            var worldDir = System.IO.Path.Combine(savesDir, testWorld);
+            var tmpZip = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "自检数据包.zip");
+            var packTarget = System.IO.Path.Combine(worldDir, "datapacks");
+
+            try
+            {
+                System.IO.Directory.CreateDirectory(worldDir);
+                System.IO.File.WriteAllBytes(System.IO.Path.Combine(worldDir, "level.dat"), [0x0A, 0x00, 0x00]);
+                System.IO.File.WriteAllBytes(tmpZip, [0x50, 0x4B, 0x05, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+
+                content.RefreshWorlds();
+                Check(content.Worlds.Any(w => w.Name == testWorld),
+                    "能列出新建的存档", string.Join(",", content.Worlds.Select(w => w.Name)));
+
+                var packTask = PclLike.Core.Content.ContentInstaller.InstallFileAsync(
+                    inst, PclLike.Core.Content.ContentKind.Datapack, tmpZip,
+                    preferredFileName: "自检数据包.zip", worldName: testWorld);
+
+                for (var i = 0; i < 60 && !packTask.IsCompleted; i++)
+                {
+                    DoEvents();
+                    Thread.Sleep(50);
+                }
+
+                var packResult = packTask.IsCompleted ? packTask.Result : null;
+                Check(packResult?.Ok == true, "数据包装进存档能成功", packResult?.Message ?? "超时");
+
+                if (packResult?.Ok == true)
+                {
+                    Check(System.IO.File.Exists(System.IO.Path.Combine(packTarget, "自检数据包.zip")),
+                        "数据包落在 saves/<世界>/datapacks/ 下", packResult.InstalledPath ?? "");
+
+                    // 反向必须失败：世界不存在时不能瞎猜装到哪儿
+                    var badTask = PclLike.Core.Content.ContentInstaller.InstallFileAsync(
+                        inst, PclLike.Core.Content.ContentKind.Datapack, tmpZip,
+                        preferredFileName: "自检数据包.zip", worldName: "根本没有这个世界");
+
+                    for (var i = 0; i < 60 && !badTask.IsCompleted; i++)
+                    {
+                        DoEvents();
+                        Thread.Sleep(50);
+                    }
+
+                    var badResult = badTask.IsCompleted ? badTask.Result : null;
+                    Check(badResult?.Ok == false, "世界不存在时数据包安装要报错而不是瞎装",
+                        badResult?.Message ?? "超时");
+                }
+            }
+            finally
+            {
+                try { if (System.IO.Directory.Exists(worldDir)) System.IO.Directory.Delete(worldDir, true); } catch { }
+                try { if (System.IO.File.Exists(tmpZip)) System.IO.File.Delete(tmpZip); } catch { }
+            }
+
+            Check(!System.IO.Directory.Exists(worldDir), "自检的存档已清理（不留残留）");
+            Check(!System.IO.Directory.Exists(packTarget), "自检的 datapacks 目录已随存档一起清掉");
+
             // 切到世界栏：这栏不联网，但要把存档列出来
             content.Activate(ContentTab.World, autoSearch: false);
             Check(!content.IsOnlineTab, "世界栏不是联网栏目");

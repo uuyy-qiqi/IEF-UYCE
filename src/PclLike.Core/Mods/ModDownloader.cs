@@ -577,7 +577,8 @@ public sealed class ModDownloader : IDisposable
         int limit = 20,
         int offset = 0,
         CancellationToken ct = default,
-        string projectType = "mod")
+        string projectType = "mod",
+        string? category = null)
     {
         limit = Math.Clamp(limit, 1, 100);
         offset = Math.Max(0, offset);
@@ -585,7 +586,7 @@ public sealed class ModDownloader : IDisposable
 
         try
         {
-            var facets = BuildModrinthFacets(mcVersion, loader, projectType);
+            var facets = BuildModrinthFacets(mcVersion, loader, projectType, category);
             var url = $"{ModrinthApi}/search?query={Uri.EscapeDataString(query ?? "")}" +
                       $"&limit={limit}&offset={offset}&index=relevance" +
                       (facets.Length > 0 ? $"&facets={facets}" : "");
@@ -642,7 +643,11 @@ public sealed class ModDownloader : IDisposable
     /// 同时覆盖 Forge 和 NeoForge 的旧包，所以 NeoForge 也传 forge 会漏掉
     /// 纯 NeoForge 的包，这里两者都带上用 OR 连。
     /// </summary>
-    private static string BuildModrinthFacets(string? mcVersion, string? loader, string projectType = "mod")
+    private static string BuildModrinthFacets(
+        string? mcVersion,
+        string? loader,
+        string projectType = "mod",
+        string? category = null)
     {
         var groups = new List<string> { $"[\"project_type:{projectType}\"]" };
 
@@ -662,6 +667,16 @@ public sealed class ModDownloader : IDisposable
             groups.Add("[" + string.Join(",", names.Select(n => $"\"categories:{n}\"")) + "]");
         }
 
+        // 附加分类。数据包就是靠这个区分的 —— Modrinth 上 datapack 不是
+        // 一种 project_type，纯数据包（比如各种结构包）在 API 里一律是
+        // project_type:mod + categories 里带 datapack。实测：
+        // project_type:datapack 会被服务端**静默忽略**（不报错，返回的是不限
+        // 类型的搜索结果）；project_type:mod + categories:datapack 才是 146 个
+        // 纯数据包。
+        var c = (category ?? "").Trim().ToLowerInvariant();
+        if (c.Length > 0)
+            groups.Add($"[\"categories:{c}\"]");
+
         if (!string.IsNullOrWhiteSpace(mcVersion))
             groups.Add($"[\"versions:{mcVersion.Trim()}\"]");
 
@@ -671,13 +686,16 @@ public sealed class ModDownloader : IDisposable
     /// <summary>
     /// Modrinth 能接受的 project_type 白名单。传错会被服务端忽略（而不是报错），
     /// 结果就是"搜出来一堆 Mod"—— 所以这里收敛到已知值，未知的退回 mod。
+    ///
+    /// 注意 `datapack` **不在**白名单里：Modrinth 没有这个 project_type，
+    /// 传过去只会被忽略。要筛数据包请用 mod + category="datapack"。
     /// </summary>
     private static string NormalizeProjectType(string? projectType)
     {
         var t = (projectType ?? "").Trim().ToLowerInvariant();
         return t switch
         {
-            "mod" or "modpack" or "resourcepack" or "shader" or "datapack" or "plugin" => t,
+            "mod" or "modpack" or "resourcepack" or "shader" or "plugin" => t,
             _ => "mod",
         };
     }

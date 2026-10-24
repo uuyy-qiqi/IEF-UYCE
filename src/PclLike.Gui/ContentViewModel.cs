@@ -93,6 +93,12 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
     /// <summary>Modrinth 的 project_type。世界/收藏夹用不上。</summary>
     public string ProjectType { get; private set; } = "mod";
 
+    /// <summary>
+    /// 附加的一条 Modrinth 分类过滤。目前只有数据包用得上 —— 它在 API 里
+    /// 不是一种 project_type，而是 mod 里的 datapack 分类。
+    /// </summary>
+    public string Category { get; private set; } = "";
+
     /// <summary>对应的 ContentKind；收藏夹是 null（装的时候按收藏项自己的类型走）。</summary>
     public ContentKind? Kind { get; private set; } = ContentKind.Mod;
 
@@ -144,37 +150,39 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
     {
         Tab = tab;
 
-        (Title, HintText, ProjectType, Kind, NeedsLoader) = tab switch
+        (Title, HintText, ProjectType, Category, Kind, NeedsLoader) = tab switch
         {
             ContentTab.Mod => ("Mod",
                 "从 Modrinth 搜 Mod 直接装进当前实例的 mods/。搜索会按这个实例的加载器过滤 —— 装错加载器的 Mod 进游戏会崩。",
-                "mod", (ContentKind?)ContentKind.Mod, true),
+                "mod", "", (ContentKind?)ContentKind.Mod, true),
 
             ContentTab.ModPack => ("整合包",
                 "整合包会下载它自带的一整份文件清单（几十到几百个），装进当前实例的根目录。装之前建议先新建一个空实例，别覆盖正在玩的那个。",
-                "modpack", (ContentKind?)ContentKind.ModPack, true),
+                "modpack", "", (ContentKind?)ContentKind.ModPack, true),
 
             ContentTab.Datapack => ("数据包",
                 "数据包是**挂在某个世界下面**的，所以上面要先选一个世界。世界不存在时不会瞎猜放哪儿，会直接报错。",
-                "datapack", (ContentKind?)ContentKind.Datapack, false),
+                // Modrinth 没有 datapack 这个 project_type，纯数据包在 API 里
+                // 是 mod + categories 带 datapack。传 datapack 会被静默忽略。
+                "mod", "datapack", (ContentKind?)ContentKind.Datapack, false),
 
             ContentTab.ResourcePack => ("资源包",
                 "资源包装进 resourcepacks/。资源包没有加载器分类，所以这里不按加载器过滤，只按游戏版本。",
-                "resourcepack", (ContentKind?)ContentKind.ResourcePack, false),
+                "resourcepack", "", (ContentKind?)ContentKind.ResourcePack, false),
 
             ContentTab.Shader => ("光影包",
                 "光影包装进 shaderpacks/。它本身还要游戏里装了 Iris 或 OptiFine 才会生效 —— 原版客户端装了也不会亮。",
-                "shader", (ContentKind?)ContentKind.Shader, false),
+                "shader", "", (ContentKind?)ContentKind.Shader, false),
 
             ContentTab.World => ("世界",
                 "存档管理：导入别人的存档 zip、把自己玩的存档导出去分享、删掉不想要的。这里的东西都在当前实例的 saves/ 里。",
-                "", null, false),
+                "", "", null, false),
 
             ContentTab.Favorite => ("收藏夹",
                 "你收藏过的项目。收藏只记项目本身（名字、类型、简介），不记版本 —— 所以点安装时会按当前实例的版本和加载器重新挑一个能用的。",
-                "", null, false),
+                "", "", null, false),
 
-            _ => ("Mod", "", "mod", (ContentKind?)ContentKind.Mod, true),
+            _ => ("Mod", "", "mod", "", (ContentKind?)ContentKind.Mod, true),
         };
 
         IsOnlineTab = HasOnlineSource(tab);
@@ -184,7 +192,7 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
                      nameof(Tab), nameof(Title), nameof(HintText), nameof(IsOnlineTab),
                      nameof(IsWorldTab), nameof(IsFavoriteTab), nameof(ShowSearchPanel),
                      nameof(ShowWorldPanel), nameof(ShowFavoritePanel), nameof(ProjectType),
-                     nameof(Kind), nameof(NeedsLoader), nameof(NeedsWorldPick),
+                     nameof(Category), nameof(Kind), nameof(NeedsLoader), nameof(NeedsWorldPick),
                  })
             OnPropertyChanged(name);
 
@@ -367,9 +375,12 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
                 limit: 30,
                 offset: 0,
                 ct: _cts.Token,
-                projectType: ProjectType);
+                projectType: ProjectType,
+                category: Category.Length > 0 ? Category : null);
 
-            var rows = list.Select(r => ContentRow.FromSearch(r, _favorites.Has(r.ProjectId))).ToList();
+            // 类型标签由栏目给。数据包那一栏尤其需要 —— Modrinth 把数据包的
+            // project_type 一律报成 mod，不覆盖的话整屏都写着「Mod」。
+            var rows = list.Select(r => ContentRow.FromSearch(r, _favorites.Has(r.ProjectId), Title)).ToList();
 
             OnUi(() =>
             {
@@ -377,9 +388,15 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
                 foreach (var row in rows) Results.Add(row);
             });
 
-            StatusMessage = rows.Count == 0
+            // 数据包栏的"这个实例还没有存档"必须一直挂着：它是"装了也没地方放"
+            // 的解释，被下面那句"共 N 条"盖掉就等于没说过。
+            var warn = NeedsWorldPick && Worlds.Count == 0
+                ? "⚠ 这个实例还没有存档，数据包没地方装 —— 进去建一个世界再回来。\n"
+                : "";
+
+            StatusMessage = warn + (rows.Count == 0
                 ? "一条都没搜到。换个关键词，或者把游戏版本/加载器放宽到不限试试。"
-                : $"共 {Results.Count} 条。点「安装」装进当前实例。";
+                : $"共 {Results.Count} 条。点「安装」装进当前实例。");
 
             _log(LogKind.Info, $"{Title} 搜索「{SearchQuery.Trim()}」→ {Results.Count} 条");
         }
@@ -403,13 +420,20 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
     //  安装
     // ══════════════════════════════════════════════════════════
 
-    /// <summary>数据包要装到哪个世界。</summary>
+    /// <summary>
+    /// 数据包要装到哪个世界。
+    ///
+    /// setter 必须把 null 吃掉 —— 这个属性双向绑在「装到哪个世界」那个 ComboBox 上，
+    /// 而 ComboBox 在候选被清空时会把 SelectedValue 推成 null（不是空串）。
+    /// 漏进来之后 RefreshWorlds 里一句 TargetWorld.Length 就会抛
+    /// NullReferenceException —— 自检就是这么炸出来的。
+    /// </summary>
     private string _targetWorld = "";
 
     public string TargetWorld
     {
         get => _targetWorld;
-        set => Set(ref _targetWorld, value);
+        set => Set(ref _targetWorld, value ?? "");
     }
 
     public ObservableCollection<WorldInfo> Worlds { get; } = [];
@@ -813,16 +837,27 @@ public sealed class ContentRow : ObservableObject
         OnPropertyChanged(nameof(FavoriteButtonText));
     }
 
-    /// <summary>这一行的类型标签（「Mod」「光影包」…）。收藏夹里混着各种类型，得标出来。</summary>
-    public string TypeText => ProjectType switch
-    {
-        "mod" => "Mod",
-        "modpack" => "整合包",
-        "datapack" => "数据包",
-        "resourcepack" => "资源包",
-        "shader" => "光影包",
-        _ => ProjectType,
-    };
+    /// <summary>
+    /// 这一行的类型标签（「Mod」「光影包」…）。收藏夹里混着各种类型，得标出来。
+    ///
+    /// <see cref="Badge"/> 优先：数据包在 Modrinth 上根本没有独立的 project_type
+    /// （它查出来一律是 mod，靠 categories 里的 datapack 区分），所以那一栏
+    /// 只能由界面告诉这一行"你是个数据包"，否则用户看到的是满屏的「Mod」。
+    /// </summary>
+    public string TypeText => Badge.Length > 0
+        ? Badge
+        : ProjectType switch
+        {
+            "mod" => "Mod",
+            "modpack" => "整合包",
+            "datapack" => "数据包",
+            "resourcepack" => "资源包",
+            "shader" => "光影包",
+            _ => ProjectType,
+        };
+
+    /// <summary>所在栏目给的类型标签，空表示按 ProjectType 自己推。</summary>
+    public string Badge { get; init; } = "";
 
     /// <summary>副标题：简介 + 作者/下载量。搜索结果是这些都有，收藏项可能缺。</summary>
     public string SubtitleText
@@ -853,7 +888,7 @@ public sealed class ContentRow : ObservableObject
         return t is "—" or "–" or "-" ? "" : t;
     }
 
-    public static ContentRow FromSearch(ModSearchResult r, bool isFavorite) => new()
+    public static ContentRow FromSearch(ModSearchResult r, bool isFavorite, string badge = "") => new()
     {
         ProjectId = r.ProjectId,
         Title = r.Name,
@@ -862,6 +897,7 @@ public sealed class ContentRow : ObservableObject
         Author = r.Author,
         IconUrl = r.IconUrl,
         ProjectType = r.ProjectType,
+        Badge = badge,
         DownloadsText = r.DownloadsText,
         LoadersText = CleanLoaders(r.LoadersText),
         _isFavorite = isFavorite,
