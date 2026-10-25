@@ -64,6 +64,13 @@ public static class Program
         if (packIdx >= 0)
             return ContentProbe.Run(args.Skip(packIdx).ToArray());
 
+        // 安装包探针：PclLike.exe --installer <key> [mc版本]
+        // key = fabric | quilt | forge | neoforge | optifine | legacyfabric
+        // 走的是界面同一条路（InstallerViewModel），验收"点一下会发生什么"。
+        var instIdx = Array.FindIndex(args, a => a.Equals("--installer", StringComparison.OrdinalIgnoreCase));
+        if (instIdx >= 0)
+            return InstallerProbe.Run(args.Skip(instIdx).ToArray()).GetAwaiter().GetResult();
+
         // 常规启动：交给 WPF 的标准流程
         var app = new App();
         app.InitializeComponent();

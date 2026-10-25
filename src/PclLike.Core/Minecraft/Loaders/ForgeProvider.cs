@@ -57,6 +57,19 @@ public abstract class ForgeLikeProvider : ILoaderProvider
 
     protected abstract string InstallerArtifactId(string loaderVersion);
 
+    /// <summary>
+    /// installer 在 maven 里的目录名。
+    ///
+    /// Forge 的 maven 目录是「MC 版本 + 版本号」（1.20.1-47.4.28），Cleanroom 是
+    /// 裸版本号（0.7.12-alpha）—— 同一套 processor 链，目录规则不一样，所以交子类。
+    /// </summary>
+    protected virtual string InstallerVersionKey(string mcVersion, string loaderVersion)
+        => loaderVersion.Contains('-') ? loaderVersion : $"{mcVersion}-{loaderVersion}";
+
+    /// <summary>装完之后 versions/ 下的目录名。</summary>
+    protected virtual string ResultVersionIdFor(string mcVersion, string loaderVersion)
+        => $"{mcVersion}-forge-{loaderVersion}";
+
     /// <summary>下载 installer jar 并取出里面两个关键 JSON。</summary>
     protected async Task<(string? VersionJson, string? InstallProfileJson)> FetchInstallerPayloadAsync(
         string loaderVersion, CancellationToken ct)
@@ -258,6 +271,50 @@ public abstract class ForgeLikeProvider : ILoaderProvider
         };
     }
 
+    /// <summary>
+    /// 拿 installer 并合成最终版本 JSON，并执行 processor 链。
+    ///
+    /// 与 NeoForgeProvider 同理：这类 installer 的 srg / extra / client 三个
+    /// 产物必须由 installer 内嵌的 Java 工具生成，maven 上没有。
+    ///
+    /// 放在基类是因为它就是"Forge 系 installer"的通用流程：下载 jar → 取
+    /// version.json / install_profile.json → 合并 → 跑 processor 链。
+    /// Forge 和 Cleanroom 的差别只有 maven 目录名与产物 id 两处，各自由
+    /// <see cref="InstallerVersionKey"/> / <see cref="ResultVersionIdFor"/> 决定。
+    /// </summary>
+    public async Task<string> BuildVersionJsonAsync(
+        string mcVersion, string loaderVersion,
+        string? gameRoot = null, string? javaExe = null,
+        Action<string>? onLog = null,
+        CancellationToken ct = default)
+    {
+        var full = InstallerVersionKey(mcVersion, loaderVersion);
+        var (vj, ip, bytes) = await FetchInstallerFullAsync(full, ct).ConfigureAwait(false);
+        var resultId = ResultVersionIdFor(mcVersion, loaderVersion);
+        var json = MergeLibraries(vj, ip, mcVersion, resultId);
+
+        if (gameRoot is not null && javaExe is not null && !string.IsNullOrWhiteSpace(ip))
+        {
+            var mcJar = Path.Combine(gameRoot, "versions", mcVersion, $"{mcVersion}.jar");
+            if (File.Exists(mcJar))
+            {
+                onLog?.Invoke("  ▸ 执行 installer processor 链（生成 SRG/patched 客户端 jar）");
+                var steps = await ProcessorChain.RunAsync(
+                    bytes, ip, gameRoot, "client", mcJar, mcVersion, javaExe,
+                    onLog, ct).ConfigureAwait(false);
+
+                onLog?.Invoke($"  ✓ processor 链完成：执行 {steps.Count(s => !s.Skipped)} 步，" +
+                              $"跳过 {steps.Count(s => s.Skipped)} 步");
+            }
+            else
+            {
+                onLog?.Invoke($"  ⚠ 原版 client jar 不在（{mcJar}），跳过 processor 链");
+            }
+        }
+
+        return json;
+    }
+
     /// <summary>解析形如 1.20.1-47.4.28 或 21.1.219 的版本号做排序。</summary>
     protected static IOrderedEnumerable<string> SortDescending(IEnumerable<string> versions)
         => versions.OrderByDescending(v => v, Comparer<string>.Create(CompareVersions));
@@ -360,45 +417,5 @@ public sealed class ForgeProvider : ForgeLikeProvider
 
         // promotions 里没有该 MC 版本 = 这个版本没有 Forge
         return result;
-    }
-
-    /// <summary>
-    /// 拿 installer 并合成最终版本 JSON，并执行 processor 链。
-    ///
-    /// 与 NeoForgeProvider 同理：现代 Forge 的 srg / extra / client 三个
-    /// 产物必须由 installer 内嵌的 Java 工具生成，maven 上没有。
-    /// </summary>
-    public async Task<string> BuildVersionJsonAsync(
-        string mcVersion, string loaderVersion,
-        string? gameRoot = null, string? javaExe = null,
-        Action<string>? onLog = null,
-        CancellationToken ct = default)
-    {
-        // loaderVersion 传的是纯 forge 版本（47.4.28），maven 目录要拼成 1.20.1-47.4.28
-        var full = loaderVersion.Contains('-') ? loaderVersion : $"{mcVersion}-{loaderVersion}";
-        var (vj, ip, bytes) = await FetchInstallerFullAsync(full, ct).ConfigureAwait(false);
-        var resultId = $"{mcVersion}-forge-{loaderVersion}";
-        var json = MergeLibraries(vj, ip, mcVersion, resultId);
-
-        if (gameRoot is not null && javaExe is not null && !string.IsNullOrWhiteSpace(ip))
-        {
-            var mcJar = Path.Combine(gameRoot, "versions", mcVersion, $"{mcVersion}.jar");
-            if (File.Exists(mcJar))
-            {
-                onLog?.Invoke("  ▸ 执行 installer processor 链（生成 SRG/patched 客户端 jar）");
-                var steps = await ProcessorChain.RunAsync(
-                    bytes, ip, gameRoot, "client", mcJar, mcVersion, javaExe,
-                    onLog, ct).ConfigureAwait(false);
-
-                onLog?.Invoke($"  ✓ processor 链完成：执行 {steps.Count(s => !s.Skipped)} 步，" +
-                              $"跳过 {steps.Count(s => s.Skipped)} 步");
-            }
-            else
-            {
-                onLog?.Invoke($"  ⚠ 原版 client jar 不在（{mcJar}），跳过 processor 链");
-            }
-        }
-
-        return json;
     }
 }

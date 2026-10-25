@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.IO;
 using PclLike.Core.Minecraft;
 using PclLike.Core.Minecraft.Loaders;
 using PclLike.Core.Storage;
@@ -65,6 +66,9 @@ public sealed class InstallerViewModel : ObservableObject
     private string _hintText = "";
     private string _kindKey = "fabric";
     private string _mcVersion = "";
+
+    /// <summary>上一次由我们自动填进 <see cref="McVersion"/> 的值，用来判断框里是不是用户自己改的。</summary>
+    private string _lastGuess = "";
     private string _statusText = "";
     private bool _isBusy;
     private bool _isSupported = true;
@@ -200,6 +204,8 @@ public sealed class InstallerViewModel : ObservableObject
             "neoforge" => LoaderKind.NeoForge,
             "optifine" => LoaderKind.OptiFine,
             "legacyfabric" => LoaderKind.LegacyFabric,
+            "liteloader" => LoaderKind.LiteLoader,
+            "cleanroom" => LoaderKind.Cleanroom,
             "fabric" => LoaderKind.Fabric,
             _ => Kind,
         };
@@ -212,28 +218,47 @@ public sealed class InstallerViewModel : ObservableObject
             LoaderKind.NeoForge => "NeoForge",
             LoaderKind.OptiFine => "OptiFine",
             LoaderKind.LegacyFabric => "Legacy Fabric",
+            LoaderKind.LiteLoader => "LiteLoader",
+            LoaderKind.Cleanroom => "Cleanroom",
             _ => "Fabric",
         };
         HintText = Kind switch
         {
-            // OptiFine 这里以前写的是"没有公开接口、也没有命令行安装方式"——
-            // 两句都不成立了：版本列表走 BMCLAPI 镜像，安装靠 OptiFine.jar
-            // 自带的 optifine.Patcher。留着这句注释是给以后的人一个交代。
+            // 这段以前写的是"直接给原版打补丁"，那是错的：optifine.Patcher 产出的是
+            // 只有 srg/ 覆盖的 Forge Mod 包，不是完整客户端。1.13 以后它本来就只以
+            // Mod 形式分发（自带的图形安装器要显示器，命令行跑不了），所以正解是
+            // 先装 Forge、再把这个 jar 放进实例的 mods。
             LoaderKind.OptiFine =>
-                "OptiFine 不是「挂上去」的加载器，而是直接给原版打补丁（版本列表来自 BMCLAPI 镜像）。"
-              + "装好后在「启动」页的版本列表里选它。",
+                "OptiFine 从 1.13 起是以 Forge Mod 的形式发布的（版本列表来自 BMCLAPI 镜像）。"
+              + "点「安装这个」会先备好同版本的 Forge，再把这个 jar 放进当前实例的 mods 目录；"
+              + "启动时选装出来的那个 Forge 版本就行。",
             LoaderKind.LegacyFabric =>
                 "Legacy Fabric 是给 1.13.2 及更早版本用的 Fabric 分支，版本列表来自 meta.legacyfabric.net。",
+            LoaderKind.LiteLoader =>
+                "LiteLoader 是 1.12.2 及更早的轻量加载器（靠 launchwrapper 的 tweakClass 挂进游戏）。"
+              + "它的元数据停在 1.12.2，所以先在上面把 MC 版本填成 1.12.2 再装。",
+            LoaderKind.Cleanroom =>
+                "Cleanroom 是 1.12.2 上继续维护的 Forge 分支（版本列表来自 repo.cleanroommc.com）。"
+              + "安装方式和 Forge 一样：下 installer、跑 processor 链生成 srg 客户端 jar，"
+              + "装完在「启动」页的版本列表里选它。它只有 1.12.2 这一条线。",
             _ => $"选一个 Minecraft 版本，这里会列出 {Title} 的可用版本；"
                + "点「安装这个」就会把它装成一个新版本（原版会自动一起补上），"
                + "装完在「启动」页的版本列表里就能选。",
         };
 
+        // 这个值只是"猜"出来的默认值：当前实例是什么版本就先填什么。
+        //
+        // 早先写成「只要猜得出来就拿猜的覆盖」，结果是你在框里手填了 1.12.2、
+        // 一切页签或者刷新一下就被改回实例的版本 —— LiteLoader / Legacy Fabric
+        // 这种只认老版本的列表因此永远查不出来（界面还一直显示 1.20.1）。
+        // 现在只在"框是空的"或者"框里还是上次我们自动填的那个值"时才动手。
         var guess = ContentViewModel.GuessMcVersion(_instance().VersionId);
-        if (McVersion.Trim().Length == 0 || guess.Length > 0)
+        if (McVersion.Trim().Length == 0 || McVersion == _lastGuess)
         {
             McVersion = guess.Length > 0 ? guess : McVersion;
         }
+
+        _lastGuess = McVersion;
 
         _queriedEmpty = false;
         _ = RefreshAsync();
@@ -358,6 +383,26 @@ public sealed class InstallerViewModel : ObservableObject
 
             var baseInstaller = new InstanceInstaller(_gameRoot);
             var filled = await baseInstaller.InstallAsync(result.VersionId).ConfigureAwait(false);
+
+            // OptiFine 是 Forge Mod：它没有自己的"版本"，真正的最后一步是把这个 jar
+            // 放进实例的 mods 目录。上面 InstallAsync 已经把 Forge 备好了。
+            if (result.ModJarPath is not null)
+            {
+                var modsDir = Path.Combine(_instance().GameDir, "mods");
+                Directory.CreateDirectory(modsDir);
+                var dest = Path.Combine(modsDir, Path.GetFileName(result.ModJarPath));
+                File.Copy(result.ModJarPath, dest, overwrite: true);
+
+                _log(LogKind.Ok, $"OptiFine 已放进 {dest}");
+                _log(LogKind.Ok, $"✓ {row.Name} 就绪：启动时选 {result.VersionId}（Forge）");
+
+                OnUi(() =>
+                {
+                    StatusText = $"✓ OptiFine 已放进实例的 mods；启动时选 {result.VersionId}（Forge）";
+                    IsBusy = false;
+                });
+                return;
+            }
 
             OnUi(() =>
             {

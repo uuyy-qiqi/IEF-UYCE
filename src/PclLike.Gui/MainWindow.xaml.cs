@@ -164,6 +164,8 @@ public partial class MainWindow : Window
                 AddNav("fabric", "\uE8FD", "Fabric");
                 AddNav("quilt", "\uE8EF", "Quilt");
                 AddNav("legacyfabric", "\uE8FD", "Legacy Fabric");
+                AddNav("liteloader", "\uE7C1", "LiteLoader");
+                AddNav("cleanroom", "\uE7C1", "Cleanroom");
                 break;
 
             case "settings":
@@ -367,7 +369,11 @@ public partial class MainWindow : Window
 
         // 「安装包」里除 Minecraft 之外的几项走加载器安装屏（InstallerViewModel）。
         // Minecraft 那一项就是原版，不归它管，仍然走版本列表。
-        if (key is "fabric" or "quilt" or "forge" or "neoforge" or "optifine" or "legacyfabric")
+        //
+        // 这个名单必须和上面 AddNav 出来的键一一对上：漏一个，那一项点下去就
+        // 只会切到"版本列表"屏，看着像没反应（LiteLoader/Cleanroom 就这样漏过）。
+        if (key is "fabric" or "quilt" or "forge" or "neoforge" or "optifine"
+                or "legacyfabric" or "liteloader" or "cleanroom")
         {
             PageDownload.Visibility = Visibility.Collapsed;
             PageContent.Visibility = Visibility.Collapsed;

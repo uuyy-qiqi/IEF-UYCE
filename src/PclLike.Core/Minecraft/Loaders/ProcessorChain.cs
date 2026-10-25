@@ -677,7 +677,7 @@ if (po["outputs"] is { } outNode)
                 ct.ThrowIfCancellationRequested();
 
                 var path = PathOf(name)!;
-                var url = MavenUrl(name, StripLibrariesFromBase());
+                var url = MavenUrl(name, BaseFor(name));
 
                 try
                 {
@@ -695,9 +695,30 @@ if (po["outputs"] is { } outNode)
             }
         }
 
-        /// <summary>processor 依赖都来自 Forge/NeoForge maven，从中反推 base。</summary>
-        private static string StripLibrariesFromBase()
-            => LoaderHttp.MavenBase;
+        /// <summary>
+        /// processor 依赖该去哪个 maven 下。
+        ///
+        /// 不能一律用 <c>LoaderHttp.MavenBase</c> —— 那是 NeoForge 的仓库。
+        /// Forge 的 <c>net.minecraftforge:*</c>（比如 srgutils）只躺在
+        /// maven.minecraftforge.net 上，拿 NeoForge 的地址去要就是 404，
+        /// 装 OptiFine（它要先装 Forge）时就是这么炸的。
+        ///
+        /// 按坐标的 group 分派，认不出来才退回默认。
+        /// </summary>
+        private static string BaseFor(string mavenName)
+        {
+            var group = mavenName.Split(':')[0];
+
+            if (group.StartsWith("net.neoforged", StringComparison.OrdinalIgnoreCase))
+                return "https://maven.neoforged.net/releases";
+
+            if (group.StartsWith("net.minecraftforge", StringComparison.OrdinalIgnoreCase)
+                || group.StartsWith("net.minecraft", StringComparison.OrdinalIgnoreCase)
+                || group.StartsWith("de.oceanlabs", StringComparison.OrdinalIgnoreCase))
+                return "https://maven.minecraftforge.net";
+
+            return LoaderHttp.MavenBase;
+        }
 
         /// <summary>installer 字节落盘一次，供 {INSTALLER} 使用。</summary>
         public string SaveInstallerCopy(byte[] bytes)
