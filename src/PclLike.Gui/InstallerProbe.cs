@@ -28,6 +28,9 @@ internal static class InstallerProbe
         var key = rest.Length > 0 ? rest[0].ToLowerInvariant() : "fabric";
         var mc = rest.Length > 1 ? rest[1] : "1.20.1";
 
+        // 第三个参数可以钉死具体的加载器版本（整合包要复现 forge 47.4.0 这种场景）
+        var want = rest.Length > 2 ? rest[2] : null;
+
         var root = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".pcllike");
 
@@ -82,7 +85,46 @@ internal static class InstallerProbe
             return 0;
         }
 
-        var row = vm.Versions.FirstOrDefault(v => v.Version.IsStable) ?? vm.Versions[0];
+        // 指定版本但列表里没有 → 走 Core 直接装那一个。
+        //
+        // Forge 的列表是"每个 MC 版本只给最新版"（promotions 文件就长这样），
+        // 可整合包要的往往正是某个具体的旧版 —— CursePack 那条路就是直接调
+        // LoaderInstaller 装指定版本的，这里跟着同一条路复现。
+        var exact = want is null
+            ? null
+            : vm.Versions.FirstOrDefault(v => v.Version.Version.Contains(want, StringComparison.OrdinalIgnoreCase));
+
+        if (want is not null && exact is null)
+        {
+            Console.WriteLine($"列表里没有 {want}（只有 {string.Join("、", vm.Versions.Select(v => v.Version.Version))}）");
+            Console.WriteLine($"→ 直接按指定版本装：{key} {mc}-{want}");
+
+            var kind = key switch
+            {
+                "neoforge" => PclLike.Core.Minecraft.Loaders.LoaderKind.NeoForge,
+                "cleanroom" => PclLike.Core.Minecraft.Loaders.LoaderKind.Cleanroom,
+                "fabric" => PclLike.Core.Minecraft.Loaders.LoaderKind.Fabric,
+                "quilt" => PclLike.Core.Minecraft.Loaders.LoaderKind.Quilt,
+                "legacyfabric" => PclLike.Core.Minecraft.Loaders.LoaderKind.LegacyFabric,
+                "liteloader" => PclLike.Core.Minecraft.Loaders.LoaderKind.LiteLoader,
+                "optifine" => PclLike.Core.Minecraft.Loaders.LoaderKind.OptiFine,
+                _ => PclLike.Core.Minecraft.Loaders.LoaderKind.Forge,
+            };
+
+            var direct = new PclLike.Core.Minecraft.LoaderInstaller(root);
+            var swd = System.Diagnostics.Stopwatch.StartNew();
+            var res = await direct.InstallAsync(kind, mc, want,
+                progress: null, onLog: t => Console.WriteLine($"   {t}"));
+            swd.Stop();
+
+            Console.WriteLine($"✓ 装完 {swd.Elapsed.TotalSeconds:0.#}s → {res.VersionId}");
+            Console.WriteLine($"  版本目录存在 = {Directory.Exists(Path.Combine(root, "versions", res.VersionId))}");
+            foreach (var w in res.Warnings) Console.WriteLine($"  警告：{w}");
+            PrintFmlLibraries(root);
+            return 0;
+        }
+
+        var row = exact ?? vm.Versions.FirstOrDefault(v => v.Version.IsStable) ?? vm.Versions[0];
         Console.WriteLine($"选中 = {row.Name}  → {row.ResultId}");
         Console.WriteLine();
 
@@ -117,6 +159,33 @@ internal static class InstallerProbe
             Console.WriteLine("    （没有 mods 目录）");
         }
 
+        // ── install_profile 的库有没有真的落到 libraries/ ──
+        //
+        // 这一串（fmlcore / *language / forge:universal）**不在**版本 json 里，
+        // 官方安装器也是把它们直接铺进 libraries/ 的。少了 fmlcore，游戏会在
+        // 启动第一阶段炸 Invalid paths argument, contained no existing paths。
+        PrintFmlLibraries(root);
+
         return 0;
+    }
+
+    /// <summary>把 install_profile 那串"必须在盘上"的库列出来。</summary>
+    private static void PrintFmlLibraries(string root)
+    {
+        Console.WriteLine();
+        Console.WriteLine("── install_profile 的库（必须在盘上）──");
+
+        var fmlRoot = Path.Combine(root, "libraries", "net", "minecraftforge");
+
+        foreach (var art in new[] { "fmlcore", "javafmllanguage", "lowcodelanguage", "mclanguage", "fmlloader" })
+        {
+            var d = Path.Combine(fmlRoot, art);
+            var jars = Directory.Exists(d) ? Directory.GetFiles(d, "*.jar", SearchOption.AllDirectories) : [];
+            Console.WriteLine($"    {art,-18} {(jars.Length == 0 ? "—（缺）" : string.Join(" | ", jars.Select(Path.GetFileName)))}");
+        }
+
+        var forgeDir = Path.Combine(fmlRoot, "forge");
+        var uni = Directory.Exists(forgeDir) ? Directory.GetFiles(forgeDir, "*universal*.jar", SearchOption.AllDirectories) : [];
+        Console.WriteLine($"    {"forge:universal",-18} {(uni.Length == 0 ? "—（缺）" : string.Join(" | ", uni.Select(Path.GetFileName)))}");
     }
 }

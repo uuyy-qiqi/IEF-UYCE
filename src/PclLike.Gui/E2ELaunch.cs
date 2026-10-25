@@ -17,7 +17,7 @@ namespace PclLike.Gui;
 /// </summary>
 public static class E2ELaunch
 {
-    public static int Run(string versionId)
+    public static int Run(string versionId, string? instanceName = null)
     {
         var steps = new List<string>();
         var failed = false;
@@ -54,6 +54,34 @@ public static class E2ELaunch
             }
 
             steps.Add($"[2] 版本清单已加载：{vm.Versions.Count} 个版本");
+
+            // ---- 指定实例（可选）----
+            // 用来验收「某个已经装好的实例到底能不能启动」：只给版本 id 是验不到的，
+            // 启动器会去找一个挂在那个版本上的默认实例，跟你要看的那个可能不是同一个。
+            if (!string.IsNullOrWhiteSpace(instanceName))
+            {
+                vm.RefreshInstances();
+
+                var inst = vm.Instances.FirstOrDefault(i =>
+                    string.Equals(i.Name, instanceName, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(i.Id, instanceName, StringComparison.OrdinalIgnoreCase));
+
+                if (inst is null)
+                {
+                    steps.Add($"[!] 实例列表里没有 {instanceName}（现有：{string.Join("、", vm.Instances.Select(i => i.Name))}）");
+                    return Report(steps, ok: false);
+                }
+
+                vm.SelectedInstance = inst;
+                DoEvents();
+                steps.Add($"[2.5] 已选中实例「{inst.Name}」→ {inst.VersionId}（{inst.GameDir}）");
+
+                if (!string.IsNullOrWhiteSpace(inst.VersionId) && inst.VersionId != versionId)
+                {
+                    steps.Add($"      （命令行给的是 {versionId}，改用实例自己挂的版本 {inst.VersionId}）");
+                    versionId = inst.VersionId;
+                }
+            }
 
             // ---- 选中目标版本 ----
             var target = vm.Versions.FirstOrDefault(v => v.Id == versionId);

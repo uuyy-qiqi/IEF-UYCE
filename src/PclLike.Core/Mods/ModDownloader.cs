@@ -962,6 +962,54 @@ public sealed class ModDownloader : IDisposable
     // ────────────────────────────────────────────────────────────
 
     /// <summary>
+    /// 只问「这个 projectID/fileID 的文件叫什么、真实地址在哪」，不下载。
+    ///
+    /// 为什么要单独一步：CurseForge 整合包的 manifest.json 只给 id，不给文件名。
+    /// 而直接拼 CDN 地址（<c>https://edge.forgecdn.net/files/{id/1000}/{id%1000}/名字</c>）
+    /// 又必须知道名字 —— 没名字只能下成 <c>cf-6552097.jar</c>，mods 目录里堆上
+    /// 两百多个这种名字，谁也认不出来。
+    ///
+    /// 这里走的是 CurseForge 网页上那个公开的下载端点：它 307 跳到
+    /// edge.forgecdn.net 并在查询串里带上 api-key，**不需要用户申请 key**。
+    /// 只发头不发体（ResponseHeadersRead + 立刻释放），所以代价接近一次 HEAD。
+    /// </summary>
+    public async Task<string?> ResolveCurseFileNameAsync(int projectId, int fileId, CancellationToken ct = default)
+    {
+        if (projectId <= 0 || fileId <= 0) return null;
+
+        var url = $"https://www.curseforge.com/api/v1/mods/{projectId}/files/{fileId}/download";
+
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct)
+                .ConfigureAwait(false);
+
+            if (!resp.IsSuccessStatusCode) return null;
+
+            // 跳转后的地址形如 .../files/6552/97/letsdocompat-forge-2.2.3.jar?api-key=xxx
+            var final = resp.RequestMessage?.RequestUri;
+            var name = final?.Segments.LastOrDefault()?.Trim('/');
+
+            if (string.IsNullOrWhiteSpace(name)) return null;
+
+            name = Uri.UnescapeDataString(name);
+
+            // 去掉可能的查询残渣并挡掉路径穿越
+            var slash = name.IndexOfAny(['?', '#']);
+            if (slash >= 0) name = name[..slash];
+
+            name = Path.GetFileName(name);
+
+            return string.IsNullOrWhiteSpace(name) ? null : name;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// 在 CurseForge 搜索。未配置 API key 时返回空列表 —— 这是预期行为，
     /// 调用方按"这个源不可用"处理即可，不要当成错误。
     /// </summary>

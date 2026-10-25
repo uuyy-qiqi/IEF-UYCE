@@ -10,6 +10,18 @@ public enum DroppedKind
     ModPack,
 
     /// <summary>
+    /// CurseForge 整合包：zip 里有 <c>manifest.json</c>（manifestType /
+    /// manifestVersion / minecraft / files / overrides）。
+    ///
+    /// 它和 <see cref="ModPack"/> 长得像，但清单格式是两码事：
+    /// Modrinth 的 modrinth.index.json 里每个文件都带完整下载地址和 sha1；
+    /// CurseForge 只给 projectID + fileID，文件名和地址都得另外问。
+    /// 两者必须分开 —— 拿 Modrinth 的读法去读 CurseForge 的清单，
+    /// 结果只有一句「这不是整合包：里面没有 modrinth.index.json」。
+    /// </summary>
+    CursePack,
+
+    /// <summary>
     /// 解压即玩懒人包：一个 zip 里装着整个 .minecraft（自带 versions/、
     /// libraries/、mods/、配置）。国内分享的整合包大多长这样。
     ///
@@ -84,9 +96,17 @@ public static class DroppedContentClassifier
                 entries.Select(x => x.Contains('/') ? x[..x.IndexOf('/')] : ""),
                 StringComparer.OrdinalIgnoreCase);
 
-            // 整合包：Modrinth 的 .zip 版也带这个清单
-            if (byName.Contains("modrinth.index.json") || byName.Contains("manifest.json"))
-                return new DroppedContent(DroppedKind.ModPack, path, name, "整合包（zip 里带清单）");
+            // 整合包：先按清单格式分家 —— Modrinth 与 CurseForge 的清单不是一回事
+            if (byName.Contains("modrinth.index.json"))
+                return new DroppedContent(DroppedKind.ModPack, path, name,
+                    "Modrinth 整合包（有 modrinth.index.json）");
+
+            if (byName.Contains("manifest.json") && IsCurseForgeManifest(zip))
+                return new DroppedContent(DroppedKind.CursePack, path, name,
+                    "CurseForge 整合包（有 manifest.json）");
+
+            // 名字叫 manifest.json 但不是 CurseForge 的清单：老式手工包也爱用这个
+            // 文件名，交给下面按目录结构继续判断，别硬塞进整合包这条路。
 
             // 解压即玩懒人包：包里有整个 .minecraft，或者有 versions/<id>/<id>.json
             // 这种"自带一份游戏"的结构。必须排在资源包/数据包/光影前面 ——
@@ -146,6 +166,46 @@ public static class DroppedContentClassifier
 
     private static DroppedContent Unknown(string path, string name, string why)
         => new(DroppedKind.Unknown, path, name, why);
+
+    /// <summary>
+    /// zip 里的 manifest.json 是不是 CurseForge 的清单。
+    ///
+    /// 不能只看文件名：老式手工整合包也常放一个 manifest.json。CurseForge 的
+    /// 清单有两处一眼能认的特征：<c>manifestType = "minecraftModpack"</c>，
+    /// 以及 minecraft 下面同时出现 version 与 modLoaders。
+    ///
+    /// 只读开头 64 KB 做子串判断，不全量解析：真实清单可能有几十 KB（264 个
+    /// 文件条目），为了"分类"把几百个条目解析成对象不划算。
+    /// </summary>
+    private static bool IsCurseForgeManifest(ZipArchive zip)
+    {
+        var entry = zip.Entries.FirstOrDefault(x =>
+            x.FullName.Replace('\\', '/').Equals("manifest.json", StringComparison.OrdinalIgnoreCase));
+
+        if (entry is null) return false;
+
+        try
+        {
+            var capacity = (int)Math.Clamp(entry.Length, 1, 64 * 1024);
+
+            using var stream = entry.Open();
+            using var reader = new StreamReader(stream, System.Text.Encoding.UTF8);
+
+            var buffer = new char[capacity];
+            var read = reader.Read(buffer, 0, capacity);
+            var head = new string(buffer, 0, read);
+
+            if (head.Contains("minecraftModpack", StringComparison.OrdinalIgnoreCase)) return true;
+
+            return head.Contains("\"minecraft\"", StringComparison.OrdinalIgnoreCase)
+                && head.Contains("\"modLoaders\"", StringComparison.OrdinalIgnoreCase)
+                && head.Contains("\"files\"", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     /// <summary>
     /// zip 里是不是装着一整份游戏（解压即玩包）。

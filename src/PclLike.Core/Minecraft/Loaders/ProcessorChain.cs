@@ -110,6 +110,29 @@ public static partial class ProcessorChain
                     if (c?.GetValue<string>() is { } cn) downloader.Require(cn);
         }
 
+        // ── install_profile 自带的 libraries 也要**全部落到 libraries/** ──
+        //
+        // 官方安装器的行为（2026-10-25 实测 Forge 1.20.1-47.4.0，用官方
+        // installer 在空目录里真跑一遍对照）：
+        //   它写出来的最终版本 json 就是 installer 里那份 version.json，
+        //   **29 个库，不含** fmlcore / javafmllanguage / lowcodelanguage /
+        //   mclanguage / forge:universal；
+        //   但这几个 jar 全都实实在在躺在 libraries\net\minecraftforge\ 下。
+        //
+        // 也就是说：这些库不进 classpath，但文件必须存在 —— 启动时 FML 是拿
+        // "库坐标算出来的路径"去扫的（MinecraftLocator.scanMods 收到
+        //   ...\libraries\net\minecraftforge\fmlcore\1.20.1-47.4.0\fmlcore-1.20.1-47.4.0.jar
+        // 这个路径去找文件），文件不在就
+        //   Invalid paths argument, contained no existing paths
+        // 直接崩在启动第一阶段，报错还完全看不出缺的是哪个库。
+        //
+        // 签名里带 optional：这一串里混着整条工具链，个别坐标撤包不该毁掉安装。
+        foreach (var l in profile["libraries"] as JsonArray ?? [])
+        {
+            if (l?["name"]?.GetValue<string>() is { } libName && !string.IsNullOrWhiteSpace(libName))
+                downloader.Require(libName, optional: true);
+        }
+
         // data 表里**非生成物**的 Maven 条目才是要下载的输入
         // （实践中只有 mcp_config:…@zip 这一条）
         foreach (var path in dataMap.Values.Where(v => v.IsMaven && !v.IsGenerated))
@@ -619,6 +642,7 @@ if (po["outputs"] is { } outNode)
         private readonly Action<string>? _log;
         private readonly Dictionary<string, string> _paths = new(StringComparer.Ordinal);
         private readonly List<string> _needed = [];
+        private readonly HashSet<string> _optional = new(StringComparer.Ordinal);
 
         public ProcessorDownloader(string librariesRoot, Action<string>? log)
         {
@@ -626,9 +650,18 @@ if (po["outputs"] is { } outNode)
             _log = log;
         }
 
-        public void Require(string mavenName)
+        /// <param name="optional">
+        /// true = 这个 jar 下不下来都不该让整次安装失败。
+        ///
+        /// install_profile 的 libraries 里除了运行时必需的那几个，还混着一整套
+        /// 工具链（installertools / jarsplitter / mergetool / ForgeAutoRenamingTool…）。
+        /// 个别老坐标在 maven 上会被撤掉，为了一把用不上的工具毁掉一次安装不值。
+        /// </param>
+        public void Require(string mavenName, bool optional = false)
         {
             if (string.IsNullOrWhiteSpace(mavenName)) return;
+            if (optional) _optional.Add(mavenName);
+
             if (!_needed.Contains(mavenName, StringComparer.Ordinal))
                 _needed.Add(mavenName);
         }
@@ -688,6 +721,12 @@ if (po["outputs"] is { } outNode)
                 }
                 catch (Exception ex)
                 {
+                    if (_optional.Contains(name))
+                    {
+                        _log?.Invoke($"      ! {MavenRelPath(name)} 下载失败（可选，跳过）：{ex.Message}");
+                        continue;
+                    }
+
                     throw new InvalidOperationException(
                         LoaderHttp.Explain(ex, $"下载 processor 依赖 {name}") +
                         Environment.NewLine + $"  URL: {url}", ex);

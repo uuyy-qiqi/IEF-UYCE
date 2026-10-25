@@ -35,12 +35,18 @@ public static class Program
         if (shootIdx >= 0)
             return WindowShot.Run(args.Skip(shootIdx).ToArray());
 
-        // 端到端：PclLike.exe <目录> --e2e-launch <版本id>
+        // 端到端：PclLike.exe <目录> --e2e-launch <版本id> [--instance <实例名>]
         var e2eIdx = Array.FindIndex(args, a => a.Equals("--e2e-launch", StringComparison.OrdinalIgnoreCase));
         if (e2eIdx >= 0)
         {
             var version = e2eIdx + 1 < args.Length ? args[e2eIdx + 1] : "1.21.4";
-            return E2ELaunch.Run(version);
+
+            // --instance 是可选的：验收「某个已经装好的实例」时，
+            // 光给版本 id 验不到那个实例（启动器会另找一个默认实例）
+            var e2eInstIdx = Array.FindIndex(args, a => a.Equals("--instance", StringComparison.OrdinalIgnoreCase));
+            var instName = e2eInstIdx >= 0 && e2eInstIdx + 1 < args.Length ? args[e2eInstIdx + 1] : null;
+
+            return E2ELaunch.Run(version, instName);
         }
 
         // 内嵌浏览器登录探针：PclLike.exe --login-probe [--wait 秒数]

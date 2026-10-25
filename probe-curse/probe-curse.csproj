@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 只做 CurseForge 整合包那一层的探针：铺 overrides + 下文件。
+       单独一个控制台项目，因为这层是纯 Core 的活；走 GUI 那条路要先建实例、
+       装游戏本体、装 Forge，加起来二十分钟，调这一层不值当。 -->
+  <PropertyGroup>
+    <!-- WinExe 而不是 Exe：一批几百 MB 的下载要跑十几分钟，而这个沙箱里
+         控制台程序会被发一个控制台控制事件（退出码 -1073741510 =
+         STATUS_CONTROL_C_EXIT）中途打死；没有控制台的 WinExe 不受影响
+         （GUI 那套探针连跑 15 分钟都没事）。输出仍然能用
+         RedirectStandardOutput 接住。 -->
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>probe-curse</AssemblyName>
+    <RootNamespace>ProbeCurse</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\src\PclLike.Core\PclLike.Core.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -18,3 +18,7 @@ tools/report_*.txt
 # ── 发布产物（dotnet publish 的输出，随时能重出）──
 dist/
 publish/
+
+dist2/
+probe-curse/bin/
+probe-curse/obj/

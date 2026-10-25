@@ -1058,6 +1058,158 @@ public sealed class MainViewModel : ObservableObject
                     break;
                 }
 
+                case PclLike.Core.Content.DroppedKind.CursePack:
+                {
+                    // CurseForge 整合包。和上面的 Modrinth 整合包是两条路：
+                    // 它的清单（manifest.json）只有 projectID/fileID，没有地址也没有
+                    // 文件名，得照着单子去 CurseForge 把两百多个文件挨个问回来。
+                    AppendLog(LogKind.Info, $"拖入 CurseForge 整合包：{c.FileName} —— 先读清单");
+
+                    PclLike.Core.Content.CursePackPlan plan;
+                    try
+                    {
+                        plan = PclLike.Core.Content.CursePack.ReadPlan(path);
+                    }
+                    catch (Exception ex)
+                    {
+                        lines.Add($"✗ {c.FileName}：读不了清单（{ex.Message}）");
+                        break;
+                    }
+
+                    AppendLog(LogKind.Info, $"    {plan.SummaryText}");
+
+                    if (plan.OptionalCount > 0)
+                        AppendLog(LogKind.Info, $"    其中 {plan.OptionalCount} 个标了「可选」，一并装上");
+
+                    var curseName = SanitizeInstanceName(plan.DisplayName, "拖入的整合包");
+                    var curseInst = CreateInstance(curseName, plan.McVersion, isolated: true);
+
+                    if (curseInst is null)
+                    {
+                        lines.Add($"✗ {c.FileName}：建不出实例（先选一个游戏版本，或者换个名字再拖）");
+                        break;
+                    }
+
+                    RefreshInstances();
+
+                    // ① 游戏本体
+                    AppendLog(LogKind.Info, $"    备好 {plan.McVersion} 的游戏文件");
+
+                    await _service.Installer.InstallAsync(
+                        plan.McVersion,
+                        new Progress<InstanceInstaller.InstallProgress>(p =>
+                            AppendLog(LogKind.Muted, $"      {p.Stage}")),
+                        CancellationToken.None);
+
+                    // ② 加载器：清单里写的是 "forge-47.4.0" 这种，id 拆成名字 + 版本
+                    string? pinned = null;
+
+                    if (!string.IsNullOrWhiteSpace(plan.LoaderName)
+                        && !string.IsNullOrWhiteSpace(plan.LoaderVersion))
+                    {
+                        var kind = plan.LoaderName!.ToLowerInvariant() switch
+                        {
+                            "forge" => PclLike.Core.Minecraft.Loaders.LoaderKind.Forge,
+                            "neoforge" => PclLike.Core.Minecraft.Loaders.LoaderKind.NeoForge,
+                            "fabric" => PclLike.Core.Minecraft.Loaders.LoaderKind.Fabric,
+                            "quilt" => PclLike.Core.Minecraft.Loaders.LoaderKind.Quilt,
+                            _ => (PclLike.Core.Minecraft.Loaders.LoaderKind?)null,
+                        };
+
+                        if (kind is { } loaderKind)
+                        {
+                            AppendLog(LogKind.Info, $"    装加载器 {plan.LoaderName} {plan.LoaderVersion}");
+
+                            var loaderInstaller = new LoaderInstaller(GameRoot);
+                            var loaderResult = await loaderInstaller.InstallAsync(
+                                loaderKind, plan.McVersion, plan.LoaderVersion!, null,
+                                s => AppendLog(LogKind.Muted, "      " + s));
+
+                            pinned = loaderResult.VersionId;
+
+                            foreach (var w in loaderResult.Warnings)
+                                AppendLog(LogKind.Warning, "      " + w);
+
+                            // 加载器自己的版本目录里也要有那份游戏 jar，否则启动时
+                            // 会报「Class path entries reference missing files」
+                            await _service.Installer.InstallAsync(pinned, null, CancellationToken.None);
+
+                            AppendLog(LogKind.Ok, $"    加载器就绪：{pinned}");
+                        }
+                        else
+                        {
+                            AppendLog(LogKind.Warning,
+                                $"    认不出这个加载器（{plan.LoaderName}）—— 先按 {plan.McVersion} 原版跑，装完自己换");
+                        }
+                    }
+
+                    // ③ 下文件 + 铺 overrides
+                    var curseDownloader = new PclLike.Core.Mods.ModDownloader();
+
+                    async Task<string?> FetchCurseFile(int projectId, int fileId, string targetDir, CancellationToken token)
+                    {
+                        // 文件名清单里没有，只能先问一次（那一步只读响应头，很便宜）
+                        var fileName = await curseDownloader
+                            .ResolveCurseFileNameAsync(projectId, fileId, token)
+                            .ConfigureAwait(false)
+                            ?? $"cf-{projectId}-{fileId}.jar";
+
+                        var dest = Path.Combine(targetDir, fileName);
+
+                        // 已经装好的不重下：重拖同一个包时不能把几百 MB 再来一遍
+                        var info = new FileInfo(dest);
+                        if (info.Exists && info.Length > 0) return fileName;
+
+                        var candidate = new PclLike.Core.Mods.ModDownloadCandidate
+                        {
+                            Platform = "curseforge",
+                            ProjectId = projectId.ToString(),
+                            VersionId = fileId.ToString(),
+                            Name = $"curse-{projectId}",
+                            Version = fileId.ToString(),
+                            FileName = fileName,
+                            DownloadUrl = PclLike.Core.Content.CursePack.DownloadUrl(projectId, fileId),
+                        };
+
+                        var ok = await curseDownloader
+                            .DownloadAsync(candidate, dest, null, token)
+                            .ConfigureAwait(false);
+
+                        return ok ? fileName : null;
+                    }
+
+                    var curseResult = await PclLike.Core.Content.CursePack.InstallAsync(
+                        path, plan, curseInst.GameDir, FetchCurseFile,
+                        s =>
+                        {
+                            AppendLog(LogKind.Normal, s);
+
+                            // 顶栏也报一句：拖放弹窗盖住主窗口时，日志窗口那点动静
+                            // 看不见，状态栏是唯一能证明"它还在干活"的地方。
+                            var t = s.Trim();
+                            if (t.Length > 0) SetStatus("装整合包：" + (t.Length > 36 ? t[..36] + "…" : t));
+                        });
+
+                    if (pinned is not null)
+                    {
+                        curseInst.VersionId = pinned;
+                        Store.Save(curseInst);
+
+                        var need = RequiredJavaMajor(pinned);
+
+                        if (need is > 0 && JavaList.Count > 0 && !JavaList.Any(j => j.MajorVersion >= need))
+                            AppendLog(LogKind.Warning, $"这个版本要 Java {need}，本机没找到够新的");
+                    }
+
+                    RefreshInstances();
+
+                    lines.Add($"{(curseResult.Ok ? "✓" : "✗")} {c.FileName} → 新实例「{curseInst.Name}」\n"
+                        + curseResult.Message
+                        + (pinned is null ? "" : $"\n版本：{pinned}"));
+
+                    break;
+                }
+
                 case PclLike.Core.Content.DroppedKind.PackBundle:
                 {
                     // 解压即玩的整包（一个 zip 里装着整个 .minecraft）。它和
@@ -1300,6 +1452,21 @@ public sealed class MainViewModel : ObservableObject
 
         content?.Dispose();
         lobby?.Dispose();
+
+        // 日志文件句柄也要收掉，否则关窗口后最后几行还压在缓冲区里
+        try
+        {
+            _logFile?.Flush();
+            _logFile?.Dispose();
+        }
+        catch
+        {
+            // 关不掉就算了，进程退出也会放掉
+        }
+        finally
+        {
+            _logFile = null;
+        }
     }
 
     // ─────────────────── 网络代理 ───────────────────
@@ -1931,18 +2098,83 @@ public sealed class MainViewModel : ObservableObject
 
     public void AppendLog(LogKind kind, string text)
     {
-        // 后台线程也会调进来（下载回调、游戏 stdout），必须切回 UI 线程
+        var line = text ?? "";
+        var now = DateTime.Now;
+
+        // 先落盘再进内存。落盘不依赖 UI 线程，后台线程（下载回调、游戏 stdout、
+        // 铺 overrides 的线程池）直接写就行 —— 之前只存在内存里，一旦窗口关掉
+        // 线索就没了，排查"装到一半缺文件"这种问题只能靠外部探针去数磁盘文件。
+        WriteLogFile(now, kind, line);
+
+        // 后台线程也会调进来，改内存那部分必须切回 UI 线程
         var app = Application.Current;
         if (app is not null && !app.Dispatcher.CheckAccess())
         {
-            app.Dispatcher.BeginInvoke(() => AppendLog(kind, text));
+            app.Dispatcher.BeginInvoke(() => AppendLogLines(kind, now, line));
             return;
         }
 
-        LogLines.Add(new LogLine(kind, DateTime.Now, text ?? ""));
+        AppendLogLines(kind, now, line);
+    }
+
+    private void AppendLogLines(LogKind kind, DateTime time, string text)
+    {
+        LogLines.Add(new LogLine(kind, time, text));
 
         // 防止长跑一晚上把内存吃满
         while (LogLines.Count > 5000) LogLines.RemoveAt(0);
+    }
+
+    private System.IO.StreamWriter? _logFile;
+
+    /// <summary>
+    /// 启动器自己的日志写一份到 <c>游戏目录\logs\launcher-yyyyMMdd.log</c>。
+    /// 一天一个文件，整晚跑也不会长成天文数字；写不进去（磁盘满、被杀软锁住）
+    /// 不能拖垮启动器，所以全部吞掉。
+    /// </summary>
+    private void WriteLogFile(DateTime time, LogKind kind, string text)
+    {
+        try
+        {
+            if (_logFile is null)
+            {
+                var dir = System.IO.Path.Combine(_gameRoot, "logs");
+                System.IO.Directory.CreateDirectory(dir);
+
+                var path = System.IO.Path.Combine(dir, $"launcher-{time:yyyyMMdd}.log");
+
+                _logFile = new System.IO.StreamWriter(
+                    path, append: true, encoding: new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
+                {
+                    AutoFlush = true,
+                };
+
+                _logFile.WriteLine();
+                _logFile.WriteLine($"===== 启动器启动 {time:yyyy-MM-dd HH:mm:ss} =====");
+            }
+
+            _logFile.WriteLine($"{time:HH:mm:ss} [{kind}] {text}");
+        }
+        catch
+        {
+            // 日志写不进去不能影响启动器干活
+        }
+    }
+
+    /// <summary>
+    /// 改顶栏那句状态文字。后台线程调进来会被切回 UI 线程 ——
+    /// 铺 overrides 那种活现在跑在线程池上，直接改绑定属性会炸。
+    /// </summary>
+    public void SetStatus(string text)
+    {
+        var app = Application.Current;
+        if (app is not null && !app.Dispatcher.CheckAccess())
+        {
+            app.Dispatcher.BeginInvoke(() => SetStatus(text));
+            return;
+        }
+
+        StatusText = text;
     }
 
     /// <summary>按日志内容挑颜色：错误红、警告黄、正常灰。</summary>
