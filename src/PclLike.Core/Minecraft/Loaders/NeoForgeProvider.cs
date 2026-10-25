@@ -207,9 +207,15 @@ public sealed class NeoForgeProvider : ForgeLikeProvider
                 LoaderKind.NeoForge,
                 mcVersion,
                 matched[i],
-                IsStable: i == 0,   // 只有最新的算稳定
+                IsStable: i == 0,           // 只有最新的算"推荐"
                 InstallerUrl: InstallerUrlFor(matched[i]),
-                Homepage: "https://neoforged.net/"));
+                Homepage: "https://neoforged.net/")
+            {
+                // NeoForge 的 maven 元数据里没有 stable / recommended 这种标记，
+                // 上面那个 IsStable 只是"是不是最新"。告诉界面这一点，
+                // 免得它把 47.1.105 这种正经发布版写成"测试版"。
+                StabilityKnown = false,
+            });
         }
 
         return result;
@@ -246,7 +252,10 @@ public sealed class NeoForgeProvider : ForgeLikeProvider
                 shortVer,
                 IsStable: i == 0,
                 InstallerUrl: $"{MavenBase}/{legacyGroup}/{full}/forge-{full}-installer.jar",
-                Homepage: "https://neoforged.net/"));
+                Homepage: "https://neoforged.net/")
+            {
+                StabilityKnown = false,   // 同上：这里只有"是不是最新"，没有稳定/测试之分
+            });
         }
 
         return result;

@@ -24,6 +24,16 @@ public sealed record LoaderVersion(
     string? InstallerUrl = null,
     string? Homepage = null)
 {
+    /// <summary>
+    /// <see cref="IsStable"/> 这个字段在这次查询里到底有没有意义。
+    ///
+    /// 有的来源真的区分（Forge 的 recommended、Fabric/Quilt 的 stable 标记），
+    /// 有的不区分 —— NeoForge 的 maven 元数据里根本没有这个概念，那边只能
+    /// 用"是不是最新"顶上。这时候界面上就不能写"测试版"：47.1.105 是个正经
+    /// 发布版，只是不是最新的那个。
+    /// </summary>
+    public bool StabilityKnown { get; init; } = true;
+
     /// <summary>装完之后在 versions/ 下生成的版本 id。各加载器命名规则不同。</summary>
     public string ResultVersionId => Kind switch
     {

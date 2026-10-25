@@ -23,9 +23,13 @@ public sealed class InstallerRow
     ///
     /// 加载器的非稳定版写成「测试版」而不是「快照版」—— 「快照版」在 Minecraft 里
     /// 专指游戏本体快照，套在 Fabric 的每日构建上会让人以为装的不是加载器。
+    ///
+    /// 另外：来源根本不区分稳定/测试时（NeoForge 的 maven 就是），只写版本号，
+    /// 不替它下结论 —— 47.1.105 是正经发布版，只是不是最新的那个。
     /// </summary>
-    public string Subtitle =>
-        $"{Version.MinecraftVersion} · {(Version.IsStable ? "稳定版" : "测试版")}";
+    public string Subtitle => Version.StabilityKnown
+        ? $"{Version.MinecraftVersion} · {(Version.IsStable ? "稳定版" : "测试版")}"
+        : Version.MinecraftVersion;
 
     /// <summary>装完之后 versions/ 下会出现的 id。</summary>
     public string ResultId => Version.ResultVersionId;
@@ -258,7 +262,9 @@ public sealed class InstallerViewModel : ObservableObject
                 RaiseListChanged();
                 StatusText = list.Count == 0
                     ? $"{mc} 没有可用的 {Title} 版本（是不是这个 MC 版本还不支持它？）"
-                    : $"共 {list.Count} 个 {Title} 版本，最新的稳定版是 {latestStable?.Version ?? "（没有稳定版）"}。";
+                    : list[0].StabilityKnown
+                        ? $"共 {list.Count} 个 {Title} 版本，最新的稳定版是 {latestStable?.Version ?? "（没有稳定版）"}。"
+                        : $"共 {list.Count} 个 {Title} 版本，最新的是 {list[0].Version}。";
                 IsBusy = false;
             });
         }
