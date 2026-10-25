@@ -88,8 +88,12 @@ public static class SelfTest
             Check(vm.JavaList.Count > 0, "Java 已探测",
                 string.Join("、", vm.JavaList.Select(j => $"Java {j.MajorVersion}")));
             Check(vm.SelectedVersion is not null, "自动选中了版本", vm.SelectedVersion?.Id ?? "null");
-            Check(vm.SelectedVersion?.Type == "release",
-                "默认选中的是正式版而非快照", $"{vm.SelectedVersion?.Id} ({vm.SelectedVersion?.Type})");
+            // 默认选中：正式版，或者本机已装的版本（上次玩过的加载器版本会被恢复成默认），
+            // 但不能默认落在快照/远古版上。以前只认 release，于是装完 Cleanroom 再跑自检
+            // 会红一条 —— 那是测试写窄了，不是产品错。
+            var selectedType = vm.SelectedVersion?.Type;
+            Check(selectedType is "release" or "installed",
+                "默认选中的是正式版或已安装版本", $"{vm.SelectedVersion?.Id} ({selectedType})");
             Check(vm.CanLaunch, "启动按钮可用（CanLaunch）");
 
             // ---- 控件树：确认 XAML 绑定真的栓到了值 ----

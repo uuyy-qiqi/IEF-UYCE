@@ -1502,10 +1502,25 @@ public sealed class MainViewModel : ObservableObject
 
         try
         {
-            // 启动器自己写的这个文件是以 FileShare.Read 打开的，所以游戏还在跑时也能读
-            var first = File.ReadLines(newest.FullName).FirstOrDefault();
-            if (string.IsNullOrWhiteSpace(first)) return null;
-            return first.TrimStart('#', ' ').Trim();
+            // 启动器自己写的这个文件是以 FileShare.Read 打开的，所以游戏还在跑时也能读。
+            //
+            // 文件头两行都是 `# ` 注释：第一行是 ISO 时间戳，第二行才是命令行。
+            // 以前只取第一行，于是「复制启动命令」给用户的是
+            //   # 2026-10-25T17:43:10.1234567+08:00
+            // 这种 33 个字符的时间戳（自检里那条断言抓的就是这个）。
+            //
+            // 规则：跳过空行与「能被解析成日期」的注释行，取第一行真正的命令。
+            // 用日期判断而不是「取第二行」，是为了兼容早期只写一行时间戳的旧日志。
+            foreach (var raw in File.ReadLines(newest.FullName))
+            {
+                var line = raw.TrimStart('#', ' ').Trim();
+                if (line.Length == 0) continue;
+                if (DateTimeOffset.TryParse(line, out _)) continue;
+
+                return line;
+            }
+
+            return null;
         }
         catch { return null; }
     }
