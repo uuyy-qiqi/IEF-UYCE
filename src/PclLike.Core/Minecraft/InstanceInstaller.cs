@@ -74,7 +74,14 @@ public sealed class InstanceInstaller
             if (artifact is null) continue;
             withNatives++;
 
-            var rel = (artifact.Path ?? plan.Library.ToMavenPath()).Replace('/', Path.DirectorySeparatorChar);
+            // 没给 path 的 natives 条目直接跳过：退回主 jar 路径会覆盖类库 jar。
+            if (string.IsNullOrEmpty(artifact.Path))
+            {
+                missing++;
+                continue;
+            }
+
+            var rel = artifact.Path.Replace('/', Path.DirectorySeparatorChar);
             var jar = Path.Combine(LibrariesDir, rel);
 
             // 盘上没有就补下。老式 natives 的下载任务只在「完整安装」里排一次，
@@ -217,14 +224,17 @@ public sealed class InstanceInstaller
             if (plan.NativeJar is { } n)
             {
                 var url = ResolveLibraryUrl(n, plan.Library, maven);
-                if (url is null)
+
+                // 落点必须带分类器文件名。Plan 已保证 Path 有值；这里再兜一层，
+                // 因为万一退回主 jar 路径就会覆盖类库 jar（见 ClasspathBuilder 的注释）。
+                if (url is null || string.IsNullOrEmpty(n.Path))
                 {
                     noUrlLibs.Add(Path.GetFileName(plan.Library.ToMavenPath()));
                 }
                 else
                 {
                     nativeTasks.Add((new Downloader.DownloadTask(url, Path.Combine(LibrariesDir,
-                        (n.Path ?? plan.Library.ToMavenPath()).Replace('/', Path.DirectorySeparatorChar)), n.Sha1, n.Size),
+                        n.Path.Replace('/', Path.DirectorySeparatorChar)), n.Sha1, n.Size),
                         plan.ExtractExcludePrefix));
                 }
             }
@@ -270,6 +280,26 @@ public sealed class InstanceInstaller
             .ToList();
 
         if (File.Exists(clientJar)) cp.Add(clientJar);
+
+        // natives jar 也要上 -cp。
+        //
+        // `NativeJarAlsoOnClasspath` 这个标志以前只被写、从来没人读，于是老写法
+        // （natives{} + downloads.classifiers）的 natives jar 只被解压到 natives 目录，
+        // 永远进不了 classpath。而 LWJGL 3.x 的 org.lwjgl.system.Library.<clinit>
+        // 只从 classpath 上的 natives jar 里抽 dll，不看 java.library.path：
+        //   UnsatisfiedLinkError: Failed to locate library: lwjgl.dll
+        //   at org.lwjgl.system.Library.loadSystem(Library.java:177)
+        // 实测（Cleanroom 0.7.12-alpha / LWJGL 3.4.3，2026-10-25）。
+        foreach (var p in plans)
+        {
+            if (!p.NativeJarAlsoOnClasspath || p.NativeJar?.Path is null) continue;
+
+            var nativesJar = Path.Combine(LibrariesDir,
+                p.NativeJar.Path.Replace('/', Path.DirectorySeparatorChar));
+
+            if (File.Exists(nativesJar) && !cp.Contains(nativesJar, StringComparer.OrdinalIgnoreCase))
+                cp.Add(nativesJar);
+        }
 
         var missingLibs = libResults.Where(r => !r.Ok)
             .Select(r => Path.GetFileName(r.TargetPath))

@@ -72,6 +72,25 @@ public static class ClasspathBuilder
             if (downloads?.Classifiers is not null && downloads.Classifiers.TryGetValue(classifier, out var a))
                 native = a;
 
+            // 分类器条目经常只给 url/sha1/size，没有 path。这种时候绝不能退回
+            // 「主 jar 的路径」当落点：那会把 natives 的内容写进 <artifact>-<version>.jar，
+            // 直接把类库 jar 覆盖掉（sha1 又对不上，于是反复重下、越修越坏）。
+            //
+            // 实测（Cleanroom 0.7.12-alpha + LWJGL 3.4.3，2026-10-25）：
+            // org.lwjgl 七个模块的类库 jar 全被各自的 natives-windows jar 覆盖，
+            // 游戏里表现为 org.lwjgl.Version 与 org.lwjgl.sdl.SDL_LogOutputFunctionI
+            // 这类「自家依赖 ClassNotFound」的怪错 —— 实际是类库 jar 里压根没有类。
+            if (native is not null && string.IsNullOrEmpty(native.Path))
+            {
+                native = new Artifact
+                {
+                    Path = lib.ToMavenPath().Replace(".jar", $"-{classifier}.jar"),
+                    Url = native.Url,
+                    Sha1 = native.Sha1,
+                    Size = native.Size,
+                };
+            }
+
             // 有些整合包只给 url 模板，这里退化成由 Maven 坐标推导
             if (native is null && !string.IsNullOrEmpty(lib.Url))
             {
@@ -100,7 +119,18 @@ public static class ClasspathBuilder
                 };
             }
 
-            return new LibraryPlan(lib, Jar: main, NativeJar: native, ExtractExcludePrefix: "META-INF/");
+            // natives jar 也必须进 classpath —— 老写法（natives{} + downloads.classifiers）
+            // 的 natives jar 以前只被解压，从不上 -cp，于是 LWJGL 3.x 的
+            // org.lwjgl.system.Library.<clinit> 找不到自己的核心原生库：
+            //   UnsatisfiedLinkError: Failed to locate library: lwjgl.dll
+            //   at org.lwjgl.system.Library.loadSystem(Library.java:177)
+            // 实测（Cleanroom 0.7.12-alpha / LWJGL 3.4.3，2026-10-25）：LWJGL 3.4 根本不看
+            // java.library.path，只认「classpath 上的 natives jar」（它自己抽 dll 到临时目录）。
+            // 而我们的扁平解压还有个副作用：LWJGL2 的 lwjgl.dll（306176 字节）和 LWJGL3 的
+            // lwjgl.dll（531456 字节）同名，解压到 natives 目录里只会剩下其中一个。
+            // 所以这条路必须走 classpath，不能靠解压。
+            return new LibraryPlan(lib, Jar: main, NativeJar: native,
+                ExtractExcludePrefix: "META-INF/", NativeJarAlsoOnClasspath: true);
         }
 
         // 情形 B：普通库，或者 1.19+ 把 natives 写成独立 name 的库
