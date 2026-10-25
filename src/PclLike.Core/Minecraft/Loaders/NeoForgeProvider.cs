@@ -309,7 +309,12 @@ public sealed class NeoForgeProvider : ForgeLikeProvider
     /// <param name="gameRoot">游戏根目录（.minecraft 等价物），processor 的 {ROOT}</param>
     /// <param name="javaExe">跑 processor 用的 Java（Forge 系工具需要 Java 8+）</param>
     /// <param name="onLog">日志回调</param>
-    public async Task<string> BuildVersionJsonAsync(
+    /// <remarks>
+    /// 用 <c>new</c> 隐藏基类那份：NeoForge 的 maven 布局、installer 文件名和
+    /// data 表占位符都跟 Forge 不一样，实测下来独立实现更好维护。
+    /// （基类那份是给 Forge / Cleanroom 共用的。）
+    /// </remarks>
+    public new async Task<string> BuildVersionJsonAsync(
         string mcVersion, string loaderVersion,
         string? gameRoot = null, string? javaExe = null,
         Action<string>? onLog = null,
