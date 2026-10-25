@@ -477,9 +477,26 @@
             </Border>
 
             <!-- 版本分类折叠 + 列表。
-                 四个分类各有一份独立的 ICollectionView（共用同一份 Versions 数据，
+                 五个分类各有一份独立的 ICollectionView（共用同一份 Versions 数据，
                  只是过滤条件不同），所以展开/收起一个不影响其他。
-                 PCL 也是默认全部收起，这里同样只让「正式版」默认展开。 -->
+                 PCL 也是默认全部收起，这里同样只让「正式版」默认展开。
+
+                 「已安装」排在最前面：从「安装包」栏装完 Fabric/Forge/Cleanroom
+                 之后，那个版本就落在这里 —— 玩家要启动它，就得先能看见它。 -->
+            <ToggleButton x:Name="FoldInstalled" Style="{StaticResource FoldHeader}"
+                          Content="{Binding InstalledFoldLabel}"
+                          Visibility="{Binding HasInstalled, Converter={StaticResource BoolVis}}"
+                          Margin="0,0,0,0" Click="Fold_Click"/>
+            <Border x:Name="PanelInstalled" Style="{StaticResource Card}"
+                    Visibility="Collapsed" Margin="0,0,0,12" Padding="6,8">
+              <ListBox Style="{StaticResource VersionList}"
+                       ItemContainerStyle="{StaticResource VersionItem}"
+                       ItemTemplate="{StaticResource VersionRowTemplate}"
+                       ItemsSource="{Binding InstalledView}"
+                       SelectedItem="{Binding SelectedVersion, Mode=TwoWay}"
+                       MaxHeight="300"/>
+            </Border>
+
             <ToggleButton x:Name="FoldRelease" Style="{StaticResource FoldHeader}"
                           Content="{Binding ReleaseFoldLabel}" IsChecked="True"
                           Margin="0,0,0,0" Click="Fold_Click"/>

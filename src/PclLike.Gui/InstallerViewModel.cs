@@ -58,6 +58,12 @@ public sealed class InstallerRow
 /// </summary>
 public sealed class InstallerViewModel : ObservableObject
 {
+    /// <summary>
+    /// 装完一个加载器版本时抛一次，参数是那个版本 id。
+    /// 外壳据此把版本列表选过去 —— 装完就该能直接启动它。
+    /// </summary>
+    public event Action<string>? Installed;
+
     private readonly Func<GameInstance> _instance;
     private readonly Action<LogKind, string> _log;
     private readonly string _gameRoot;
@@ -396,6 +402,9 @@ public sealed class InstallerViewModel : ObservableObject
                 _log(LogKind.Ok, $"OptiFine 已放进 {dest}");
                 _log(LogKind.Ok, $"✓ {row.Name} 就绪：启动时选 {result.VersionId}（Forge）");
 
+                // 把版本选到刚装好的 Forge 上，玩家点启动就是它
+                Installed?.Invoke(result.VersionId);
+
                 OnUi(() =>
                 {
                     StatusText = $"✓ OptiFine 已放进实例的 mods；启动时选 {result.VersionId}（Forge）";
@@ -412,6 +421,7 @@ public sealed class InstallerViewModel : ObservableObject
             });
 
             _log(LogKind.Ok, $"✓ {row.Name} 安装完成：{result.VersionId}");
+            Installed?.Invoke(result.VersionId);
         }
         catch (Exception ex)
         {

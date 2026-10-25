@@ -187,6 +187,34 @@ public static class SelfTest
             Check(MainViewModel.GuessLoader("neoforge-47.1.106") == "neoforge", "从版本 id 认出 neoforge");
             Check(MainViewModel.GuessLoader("1.20.1") == "vanilla", "原版 id 认成 vanilla");
 
+            // ---- 已安装版本 ----
+            // 「安装包」栏装完的加载器版本落在 versions/ 里，必须能在界面上看见、
+            // 能被选中：启动按「当前实例挂的版本」走，选不中就等于装了个寂寞。
+            notes.Add("  测试「已安装」栏...");
+
+            Check(vm.HasInstalled, "版本列表里有「已安装」栏");
+
+            var installedCount = vm.InstalledView.Cast<object>().Count();
+            Check(installedCount > 0, "「已安装」栏不是空的", $"{installedCount} 个");
+
+            var byInstance = vm.Instances.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.VersionId));
+            if (byInstance is not null)
+            {
+                // 先把版本选到别处、再把实例断开重选 —— 保证下面那次赋值是"真的
+                // 换了实例"，走的就是玩家在实例管理器里点「设为当前」那条路。
+                vm.SelectedVersion = vm.Versions.FirstOrDefault(v => v.Id != byInstance.VersionId)
+                                     ?? vm.SelectedVersion;
+                vm.SelectedInstance = null;
+                vm.SelectedInstance = byInstance;
+
+                Check(vm.SelectedVersion?.Id == byInstance.VersionId,
+                    "选实例会把当前版本对齐到它挂的版本",
+                    $"{byInstance.VersionId} vs {vm.SelectedVersion?.Id}");
+
+                Check(!string.IsNullOrWhiteSpace(vm.SelectedVersionLabel),
+                    "版本标签跟着有值", vm.SelectedVersionLabel);
+            }
+
             // ---- 百宝箱 ----
             notes.Add("  测试百宝箱工具...");
 

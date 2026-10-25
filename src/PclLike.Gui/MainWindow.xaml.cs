@@ -766,7 +766,8 @@ public partial class MainWindow : Window
 
         var panel = tb.Name switch
         {
-            nameof(FoldRelease) => PanelRelease,
+            nameof(FoldInstalled) => PanelInstalled,
+                nameof(FoldRelease) => PanelRelease,
             nameof(FoldSnapshot) => PanelSnapshot,
             nameof(FoldOld) => PanelOld,
             nameof(FoldJoke) => PanelJoke,

@@ -48,6 +48,10 @@ public sealed class MainViewModel : ObservableObject
         OldView = MakeView(o => IsKind(o, "old_beta") || IsKind(o, "old_alpha"));
         JokeView = MakeView(IsAprilFools);
 
+        // 本机装好的版本（含加载器版本）单独一类 —— 它们不在 Mojang 清单里，
+        // 但正是玩家自己动手装出来的东西，得单独看得见。
+        InstalledView = MakeView(o => IsKind(o, "installed"));
+
         // 界面上改完用户名/内存等需要落盘；用命令统一保存
         // （不是每次按键都写盘，避免频繁 IO）
     }
@@ -143,6 +147,9 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>愚人节版。</summary>
     public ICollectionView JokeView { get; }
 
+    /// <summary>本机 versions/ 里已装好的版本（含 Fabric/Forge/NeoForge/Cleanroom 等加载器版本）。</summary>
+    public ICollectionView InstalledView { get; }
+
     /// <summary>四组一起刷新（筛选框变化、清单加载完都调它）。</summary>
     private void RefreshCategoryViews()
     {
@@ -150,12 +157,15 @@ public sealed class MainViewModel : ObservableObject
         SnapshotsView.Refresh();
         OldView.Refresh();
         JokeView.Refresh();
+        InstalledView.Refresh();
 
         OnPropertyChanged(nameof(ReleaseFoldLabel));
         OnPropertyChanged(nameof(SnapshotFoldLabel));
         OnPropertyChanged(nameof(OldFoldLabel));
         OnPropertyChanged(nameof(JokeFoldLabel));
         OnPropertyChanged(nameof(HasJokeVersions));
+        OnPropertyChanged(nameof(InstalledFoldLabel));
+        OnPropertyChanged(nameof(HasInstalled));
     }
 
     private static int CountOf(ICollectionView v)
@@ -176,8 +186,13 @@ public sealed class MainViewModel : ObservableObject
     public string OldFoldLabel => FoldLabel("远古版", OldView);
     public string JokeFoldLabel => FoldLabel("愚人节版", JokeView);
 
+    public string InstalledFoldLabel => FoldLabel("已安装", InstalledView);
+
     /// <summary>一个愚人节版本都没有时，整条折叠项就不显示。</summary>
     public bool HasJokeVersions => CountOf(JokeView) > 0;
+
+    /// <summary>本机一个版本都没装时，「已安装」那一栏整块不出现。</summary>
+    public bool HasInstalled => CountOf(InstalledView) > 0;
 
     // ---------------- 绑定属性 ----------------
 
@@ -588,6 +603,35 @@ public sealed class MainViewModel : ObservableObject
     // ---------------- 操作 ----------------
 
     /// <summary>拉取版本清单（带本地缓存兜底）。</summary>
+    /// <summary>
+    /// 本机 versions/ 里装好的版本 id（含加载器版本：fabric-loader-…、
+    /// neoforge-…、1.12.2-cleanroom-… 之类）。
+    ///
+    /// 判定标准是「目录里有同名 json」——那才是能被启动的版本描述；
+    /// 只有目录没有 json 的，是下载或安装没走完留下的残骸，不算。
+    /// 列目录失败按「没有」处理：这只是补列表，不该让整个版本清单加载失败。
+    /// </summary>
+    private IReadOnlyList<string> InstalledVersionIds()
+    {
+        try
+        {
+            var dir = Path.Combine(GameRoot, "versions");
+            if (!Directory.Exists(dir)) return [];
+
+            return Directory.GetDirectories(dir)
+                .Select(Path.GetFileName)
+                .OfType<string>()
+                .Where(id => id.Length > 0 &&
+                             File.Exists(Path.Combine(dir, id, id + ".json")))
+                .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
     public async Task LoadVersionsAsync()
     {
         IsBusy = true;
@@ -608,6 +652,18 @@ public sealed class MainViewModel : ObservableObject
                     v.Type ?? "",
                     v.ReleaseTime,
                     v.Url));
+            }
+
+            // 本机 versions/ 里已经装好的版本也要进列表 —— 尤其是「安装包」栏刚
+            // 装上的那些加载器版本（1.12.2-cleanroom-…、fabric-loader-…、
+            // 1.20.1-forge-…）。它们不在 Mojang 清单里，不补进来的话玩家在界面上
+            // 根本选不到，装完了也启动不了。
+            foreach (var id in InstalledVersionIds())
+            {
+                if (Versions.Any(v => string.Equals(v.Id, id, StringComparison.OrdinalIgnoreCase)))
+                    continue;
+
+                Versions.Add(new VersionItem(id, "installed", null, null));
             }
 
             // 恢复上次选择的版本；没有历史记录时优先选最新正式版。
@@ -719,8 +775,21 @@ public sealed class MainViewModel : ObservableObject
             OnPropertyChanged();
             OnPropertyChanged(nameof(InstanceLabel));
             OnPropertyChanged(nameof(InstanceIsolationLabel));
+
+            // 实例自带它挂的版本（可能就是 Fabric/Cleanroom 这些加载器版本）。
+            // 选中实例时把"当前版本"也对齐过去 —— 否则界面上写的是一个版本、
+            // 真启动的是另一个，玩家根本对不上，也不知道该点哪个。
+            SyncVersionToInstance();
         }
     }
+
+    /// <summary>
+    /// 让 SelectedVersion 跟着当前实例挂的版本走。
+    ///
+    /// 那个版本可能不在 Mojang 清单里（本地装的加载器版本基本都是这样），
+    /// SelectVersionById 会现造一条「已安装」记录补进列表。
+    /// </summary>
+    private void SyncVersionToInstance() => SelectVersionById(_selectedInstance?.VersionId ?? "");
 
     /// <summary>启动页「当前实例」卡上的名字。</summary>
     public string InstanceLabel => SelectedInstance is null ? "未选择实例" : SelectedInstance.Name;
@@ -871,7 +940,43 @@ public sealed class MainViewModel : ObservableObject
     private InstallerViewModel? _installer;
 
     /// <summary>下载页「安装包」那一屏（加载器安装），同样是按需创建。</summary>
-    public InstallerViewModel Installer => _installer ??= new InstallerViewModel(CurrentInstance, AppendLog, GameRoot);
+    public InstallerViewModel Installer =>
+        _installer ??= CreateInstaller();
+
+    /// <summary>
+    /// 建安装器 ViewModel 并接上「装完就把版本选过去」。
+    ///
+    /// 不接的话：玩家在「安装包」栏装完 Cleanroom，版本列表里选中的还是原来的
+    /// 1.21.4，点启动就跑 1.21.4 —— 装了半天等于白装。点「安装」这个动作本身
+    /// 就是"我要玩这个版本"。
+    /// </summary>
+    private InstallerViewModel CreateInstaller()
+    {
+        var vm = new InstallerViewModel(CurrentInstance, AppendLog, GameRoot);
+        vm.Installed += SelectVersionById;
+        return vm;
+    }
+
+    /// <summary>
+    /// 把版本列表选中到指定 id（本地已装但不在清单里的版本会现造一条
+    /// 「已安装」记录补进列表）。
+    /// </summary>
+    public void SelectVersionById(string versionId)
+    {
+        if (string.IsNullOrWhiteSpace(versionId)) return;
+
+        var item = Versions.FirstOrDefault(v =>
+            string.Equals(v.Id, versionId, StringComparison.OrdinalIgnoreCase));
+
+        if (item is null)
+        {
+            item = new VersionItem(versionId, "installed", null, null);
+            Versions.Add(item);
+            RefreshCategoryViews();
+        }
+
+        if (!ReferenceEquals(SelectedVersion, item)) SelectedVersion = item;
+    }
 
     /// <summary>
     /// 当前实例，**只读**。
@@ -1655,7 +1760,19 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>安装（可选）+ 启动，日志实时回灌到窗口。</summary>
     public async Task LaunchAsync()
     {
-        if (SelectedVersion is null) return;
+        // 启动哪个版本？
+        //
+        // 两个地方都能改"要玩什么"：版本列表里选中的版本、当前实例挂的版本。
+        // 规则只有一条 —— **最近一次明确操作说了算**：
+        //   · 选中实例 → 版本列表跟着实例走（见 SyncVersionToInstance）
+        //   · 在列表里挑别的版本 → 启动就用它，EnsureInstanceForLaunch 再把它
+        //     写回实例（所以不会出现"界面显示 A、实际启动 B"）
+        // 列表一个都没选（还没加载完）时退回到实例挂的版本。
+        var launchVersionId = SelectedVersion?.Id;
+        if (string.IsNullOrWhiteSpace(launchVersionId))
+            launchVersionId = SelectedInstance?.VersionId;
+
+        if (string.IsNullOrWhiteSpace(launchVersionId)) return;
 
         if (IsGameRunning)
         {
@@ -1671,7 +1788,7 @@ public sealed class MainViewModel : ObservableObject
         ProgressValue = 0;
         ProgressMax = 1;
 
-        var id = SelectedVersion.Id;
+        var id = launchVersionId;
         var user = ConfigStore.SanitizeUsername(Config.Username);
 
         // 身份优先级：已登录的账号 > 配置里的离线名。
@@ -1838,6 +1955,8 @@ public sealed record VersionItem(string Id, string Type, DateTimeOffset? Release
         "snapshot" => "预览版",
         "old_beta" => "远古 Beta",
         "old_alpha" => "远古 Alpha",
+        // 本机 versions/ 里的版本（含自己装的加载器版本，见 InstalledView）
+        "installed" => "已安装",
         _ => Type,
     };
 
