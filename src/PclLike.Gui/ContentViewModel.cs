@@ -1085,9 +1085,6 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
         // 关窗时如果正在下载，取消它 —— 但不能让"已经被释放"这件事泄漏到
         // 后续调用上：那一刻其它地方可能正拿着 _cts.Token 在等（自检就撞过
         // 这个：一次取消之后紧接着的安装拿到 ObjectDisposedException）。
-        Console.WriteLine("[diag] ContentViewModel.Dispose 被调用，调用栈：");
-        Console.WriteLine(Environment.StackTrace);
-
         try { _cts.Cancel(); } catch { /* 已经释放了 */ }
         _cts.Dispose();
         _downloader.Dispose();

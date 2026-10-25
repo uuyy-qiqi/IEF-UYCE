@@ -41,7 +41,74 @@ public sealed class InstanceInstaller
 
     public sealed record InstallProgress(string Stage, int Done, int Total);
     public sealed record InstallResult(string VersionId, string ClientJar, string Classpath, string NativesDir,
-        string AssetIndexId, string MainClass, List<string> Warnings);
+        string AssetIndexId, string MainClass, List<string> Warnings,
+        List<string> MissingLibraries);
+
+    /// <summary>
+    /// 启动前兜底：保证原生库已经解压到 nativesDir。
+    ///
+    /// 完整安装那一次会解压，但那条路依赖 nativeTasks 非空 —— 旧式版本 JSON
+    /// （natives 写在 natives{} 里、downloads 只给 classifiers）在某些加载器/整合包里
+    /// 推不出分类器，nativeTasks 就是空的：Reset 把 natives 目录清空、却什么都没补回来，
+    /// 启动时报
+    ///   java.lang.UnsatisfiedLinkError: Failed to locate library: lwjgl.dll
+    /// （实测：1.12.2 + Cleanroom 0.7.12-alpha，natives 目录整个是空的。）
+    ///
+    /// 这里换成从 libraries 目录里按每个 plan 的 natives jar 直接解压：
+    /// 幂等（内容相同会覆盖写成同一份），不依赖下载任务列表。
+    /// </summary>
+    public async Task<int> EnsureNativesAsync(string versionId, string nativesDir,
+        Action<string>? log = null, CancellationToken ct = default)
+    {
+        var resolver = new VersionResolver(LoadVersionJsonAsync);
+        var version = await resolver.ResolveAsync(versionId, ct).ConfigureAwait(false);
+        var plans = ClasspathBuilder.PlanAll(version.Libraries ?? []);
+        Directory.CreateDirectory(nativesDir);
+
+        var done = 0;
+        foreach (var plan in plans)
+        {
+            var artifact = plan.NativeJar;
+            if (artifact is null) continue;
+
+            var rel = (artifact.Path ?? plan.Library.ToMavenPath()).Replace('/', Path.DirectorySeparatorChar);
+            var jar = Path.Combine(LibrariesDir, rel);
+
+            // 盘上没有就补下。老式 natives 的下载任务只在「完整安装」里排一次，
+            // 如果那次因为分类器推不出来而漏了、或者用户是直接启动（跳过了安装），
+            // 这里就是最后一道兜底 —— natives jar 都很小，几百 KB 到几 MB。
+            if (!File.Exists(jar) && !string.IsNullOrWhiteSpace(artifact.Url))
+            {
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(jar)!);
+                    var results = await _downloader.DownloadAllAsync(
+                        [new Downloader.DownloadTask(artifact.Url, jar, artifact.Sha1, artifact.Size)],
+                        null, ct).ConfigureAwait(false);
+                    if (results.Count > 0 && !results[0].Ok)
+                        log?.Invoke($"原生库下载失败 {Path.GetFileName(jar)}");
+                }
+                catch (Exception ex)
+                {
+                    log?.Invoke($"原生库下载失败 {Path.GetFileName(jar)}：{ex.Message}");
+                }
+            }
+
+            if (!File.Exists(jar)) continue;
+
+            try
+            {
+                NativesExtractor.Extract(jar, nativesDir, plan.ExtractExcludePrefix);
+                done++;
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke($"原生库解压失败 {Path.GetFileName(jar)}：{ex.Message}");
+            }
+        }
+
+        return done;
+    }
 
     public async Task<InstallResult> InstallAsync(string versionId,
         IProgress<InstallProgress>? progress = null, CancellationToken ct = default)
@@ -118,18 +185,47 @@ public sealed class InstanceInstaller
         var plans = ClasspathBuilder.PlanAll(version.Libraries ?? [], features: null);
         var jarTasks = new List<Downloader.DownloadTask>();
         var nativeTasks = new List<(Downloader.DownloadTask Task, string ExcludePrefix)>();
+        var noUrlLibs = new List<string>();
+
+        // 同一个 version json 里的库，地址推算得靠彼此的 maven 根（见 MavenIndex）
+        var maven = MavenIndex.Build(version.Libraries);
 
         foreach (var plan in plans)
         {
-            if (plan.Jar is { Url: not null } j)
-                jarTasks.Add(new Downloader.DownloadTask(j.Url, Path.Combine(LibrariesDir,
-                    (j.Path ?? plan.Library.ToMavenPath()).Replace('/', Path.DirectorySeparatorChar)), j.Sha1, j.Size));
+            if (plan.Jar is { } j)
+            {
+                var url = ResolveLibraryUrl(j, plan.Library, maven);
+                if (url is null)
+                {
+                    // 以前这里是 `is { Url: not null }`：地址空的库被静默跳过，
+                    // 不下载也不报警，等启动时才炸成 ClassNotFoundException。
+                    noUrlLibs.Add(Path.GetFileName(plan.Library.ToMavenPath()));
+                }
+                else
+                {
+                    jarTasks.Add(new Downloader.DownloadTask(url, Path.Combine(LibrariesDir,
+                        (j.Path ?? plan.Library.ToMavenPath()).Replace('/', Path.DirectorySeparatorChar)), j.Sha1, j.Size));
+                }
+            }
 
-            if (plan.NativeJar is { Url: not null } n)
-                nativeTasks.Add((new Downloader.DownloadTask(n.Url, Path.Combine(LibrariesDir,
-                    (n.Path ?? plan.Library.ToMavenPath()).Replace('/', Path.DirectorySeparatorChar)), n.Sha1, n.Size),
-                    plan.ExtractExcludePrefix));
+            if (plan.NativeJar is { } n)
+            {
+                var url = ResolveLibraryUrl(n, plan.Library, maven);
+                if (url is null)
+                {
+                    noUrlLibs.Add(Path.GetFileName(plan.Library.ToMavenPath()));
+                }
+                else
+                {
+                    nativeTasks.Add((new Downloader.DownloadTask(url, Path.Combine(LibrariesDir,
+                        (n.Path ?? plan.Library.ToMavenPath()).Replace('/', Path.DirectorySeparatorChar)), n.Sha1, n.Size),
+                        plan.ExtractExcludePrefix));
+                }
+            }
         }
+
+        if (noUrlLibs.Count > 0)
+            warnings.Add($"{noUrlLibs.Count} 个依赖库推不出下载地址：{string.Join("、", noUrlLibs.Take(3))}");
 
         var libReporter = progress is null ? null : new Progress<(int Done, int Total)>(p =>
             progress.Report(new InstallProgress("下载依赖库", p.Done, p.Total)));
@@ -169,6 +265,11 @@ public sealed class InstanceInstaller
 
         if (File.Exists(clientJar)) cp.Add(clientJar);
 
+        var missingLibs = libResults.Where(r => !r.Ok)
+            .Select(r => Path.GetFileName(r.TargetPath))
+            .ToList();
+        missingLibs.AddRange(noUrlLibs.Distinct(StringComparer.OrdinalIgnoreCase));
+
         foreach (var r in libResults.Where(r => !r.Ok))
             warnings.Add($"缺失库：{Path.GetFileName(r.TargetPath)}（{r.Error}）");
 
@@ -179,7 +280,8 @@ public sealed class InstanceInstaller
             NativesDir: nativesDir,
             AssetIndexId: assetIndexId,
             MainClass: version.MainClass ?? "net.minecraft.client.main.Main",
-            Warnings: warnings);
+            Warnings: warnings,
+            MissingLibraries: missingLibs);
     }
 
     /// <summary>本地版本 JSON 读取。找不到就抛 FileNotFoundException 让上层去下载。</summary>
@@ -226,5 +328,118 @@ public sealed class InstanceInstaller
             await File.ReadAllTextAsync(manifestPath, ct).ConfigureAwait(false),
             new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })
             ?? throw new InvalidDataException("版本清单解析失败");
+    }
+
+    /// <summary>
+    /// 库 jar 的下载地址。
+    ///
+    /// 三种情况按顺序兜底：
+    ///   1. downloads.artifact.url 是绝对地址 —— 直接用它（绝大多数版本）；
+    ///   2. 它是空的、只给了 path —— 用**同组**兄弟库反推出的 maven 根去补。
+    ///      Cleanroom 的主 jar 正是这样：url 是空串，而 com.cleanroommc:* 的
+    ///      兄弟们都在 https://maven.cleanroommc.com/；
+    ///   3. 还是补不出来 —— 退到 Library.url（老格式的 maven 根）。
+    ///
+    /// 补不出来就返回 null，由调用方记进「缺失库」；绝不拿空地址去发请求
+    /// （那只会得到 "An invalid request URI was provided"）。
+    /// </summary>
+    private static string? ResolveLibraryUrl(Artifact artifact, Library lib, MavenIndex maven)
+    {
+        var rel = (artifact.Path ?? lib.ToMavenPath()).Replace('\\', '/').TrimStart('/');
+
+        if (!string.IsNullOrWhiteSpace(artifact.Url)
+            && Uri.TryCreate(artifact.Url, UriKind.Absolute, out _))
+        {
+            return artifact.Url;
+        }
+
+        var baseUrl = maven.BaseFor(lib.Name)
+                      ?? maven.MostCommon
+                      ?? MavenIndex.NormalizeBase(lib.Url);
+
+        return baseUrl is null ? null : baseUrl + rel;
+    }
+
+    /// <summary>
+    /// 从一个 version json 的库列表里反推 maven 根。
+    ///
+    /// 做法：拿兄弟库的绝对地址减掉它自己的相对路径，剩下的就是根。
+    /// 再记一份「组 → 根」，这样同组的库能对上号 —— com.cleanroommc:* 都在
+    /// https://maven.cleanroommc.com/，而 ca.weblite 在 Maven Central，
+    /// 光靠"出现最多的那个根"会挑错。
+    /// </summary>
+    private sealed class MavenIndex
+    {
+        private readonly Dictionary<string, string> _byGroup = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, int> _byBase = new(StringComparer.OrdinalIgnoreCase);
+        private int _mostCommonCount;
+
+        /// <summary>出现次数最多的 maven 根（兜底用）。</summary>
+        public string? MostCommon { get; private set; }
+
+        public static MavenIndex Build(List<Library>? libs)
+        {
+            var index = new MavenIndex();
+            if (libs is null) return index;
+
+            foreach (var lib in libs)
+            {
+                var abs = lib.Downloads?.Artifact?.Url;
+                var rel = (lib.Downloads?.Artifact?.Path ?? lib.ToMavenPath())
+                    .Replace('\\', '/').TrimStart('/');
+
+                string? root = null;
+
+                if (!string.IsNullOrWhiteSpace(abs)
+                    && Uri.TryCreate(abs, UriKind.Absolute, out _)
+                    && abs.Length > rel.Length
+                    && abs.EndsWith(rel, StringComparison.OrdinalIgnoreCase))
+                {
+                    root = abs[..^rel.Length];
+                }
+                else
+                {
+                    root = NormalizeBase(lib.Url);
+                }
+
+                if (root is null) continue;
+
+                var group = GroupPath(lib.Name);
+                if (group is not null) index._byGroup[group] = root;
+
+                var n = index._byBase.TryGetValue(root, out var c) ? c + 1 : 1;
+                index._byBase[root] = n;
+
+                if (n > index._mostCommonCount)
+                {
+                    index._mostCommonCount = n;
+                    index.MostCommon = root;
+                }
+            }
+
+            return index;
+        }
+
+        public string? BaseFor(string? libraryName)
+        {
+            var group = GroupPath(libraryName);
+            return group is not null && _byGroup.TryGetValue(group, out var root) ? root : null;
+        }
+
+        /// <summary>库名里的组换成目录形式：com.cleanroommc:cleanmix:0.7.4 → com/cleanroommc。</summary>
+        private static string? GroupPath(string? libraryName)
+        {
+            if (string.IsNullOrWhiteSpace(libraryName)) return null;
+            var colon = libraryName.IndexOf(':');
+            return colon <= 0 ? null : libraryName[..colon].Replace('.', '/');
+        }
+
+        /// <summary>把 maven 根规整成「绝对地址 + 结尾斜杠」，不合规就返回 null。</summary>
+        public static string? NormalizeBase(string? baseUrl)
+        {
+            if (string.IsNullOrWhiteSpace(baseUrl)) return null;
+            if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out _)) return null;
+            return baseUrl.EndsWith("/", StringComparison.Ordinal) ? baseUrl : baseUrl + "/";
+        }
     }
 }

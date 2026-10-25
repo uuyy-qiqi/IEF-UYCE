@@ -123,6 +123,22 @@ public sealed class LaunchService : IDisposable
 
         warnList.AddRange(installed.Warnings);
 
+        // 库没齐就别启动 —— 缺库的进程起来也只会当场炸，玩家看到的是
+        // "启动器说启动了、游戏窗口一闪就没了"，比直接说清楚难查得多。
+        // 实测过的那次：Cleanroom 的主 jar 没下下来，Foundation 报
+        // java.lang.ClassNotFoundException: net.minecraftforge.fml.common.launcher.FMLTweaker。
+        if (installed.MissingLibraries.Count > 0)
+        {
+            var shown = string.Join("、", installed.MissingLibraries.Take(5));
+            var more = installed.MissingLibraries.Count > 5
+                ? $"（还有 {installed.MissingLibraries.Count - 5} 个）"
+                : "";
+
+            throw new InvalidOperationException(
+                $"{installed.MissingLibraries.Count} 个依赖库没下载成功，装不完整就没法启动：{shown}{more}。" +
+                "多半是网络问题，再点一次启动（会自动补下缺的文件）通常就好了。");
+        }
+
         // 2. 解析版本（拿 javaVersion 要求）
         var resolver = new VersionResolver(async (id, token) =>
         {
@@ -205,6 +221,25 @@ public sealed class LaunchService : IDisposable
         {
             if (instance.MaxMemoryMb is { } im and > 0) maxMem = im;
             extraJvm.AddRange(instance.ExtraJvmArgs);
+        }
+
+        // 启动前兜底解压原生库。
+        //
+        // 老式 natives（1.18 及更早，natives 写在 natives{} 里）不会走 LWJGL3 那条
+        // “自己从 classpath 上的 natives jar 里抽 dll”的路，全靠我们解压一次。
+        // 这一步以前只发生在完整安装里，而完整安装那条路可能一个 native 任务都排不出来
+        // （分类器推不出来），natives 目录被清成空的，游戏就报
+        //   UnsatisfiedLinkError: Failed to locate library: lwjgl.dll
+        // 实测：1.12.2 + Cleanroom。这里在启动前再保证一次，成本是几个小 jar 的解压。
+        try
+        {
+            var nativeJars = await _installer.EnsureNativesAsync(
+                options.VersionId, installed.NativesDir, onLog, ct).ConfigureAwait(false);
+            if (nativeJars > 0) onLog?.Invoke($"[原生库] 已就绪（{nativeJars} 个包）");
+        }
+        catch (Exception ex)
+        {
+            warnList.Add($"原生库解压失败：{ex.Message}");
         }
 
         var cfg = new LaunchConfig
@@ -310,21 +345,28 @@ public sealed class LaunchService : IDisposable
         }
 
         var plans = ClasspathBuilder.PlanAll(version.Libraries ?? []);
-        var cp = plans.Where(p => p.Jar is not null)
+
+        // 先算出每个该有的 jar 在哪儿，再挑出真缺的 —— 缺的这一批要报给上层，
+        // 让它决定"别启动了"（SkipInstall 这条路同样不能带着缺库硬上）。
+        var libPaths = plans.Where(p => p.Jar is not null)
             .Select(p => Path.Combine(_installer.LibrariesDir,
                 (p.Jar!.Path ?? p.Library.ToMavenPath()).Replace('/', Path.DirectorySeparatorChar)))
-            .Where(File.Exists)
             .ToList();
 
-        var missing = plans.Count(p => p.Jar is not null) - cp.Count;
-        if (missing > 0) warnings.Add($"{missing} 个依赖库缺失，建议重新执行安装");
+        var cp = libPaths.Where(File.Exists).ToList();
+        var missingLibs = libPaths.Where(p => !File.Exists(p))
+            .Select(Path.GetFileName)
+            .OfType<string>()
+            .ToList();
+
+        if (missingLibs.Count > 0) warnings.Add($"{missingLibs.Count} 个依赖库缺失，建议重新执行安装");
 
         cp.Add(clientJar);
 
         return new InstanceInstaller.InstallResult(
             versionId, clientJar, ClasspathBuilder.JoinClasspath(cp),
             Path.Combine(vdir, "natives"), version.AssetIndex?.Id ?? "legacy",
-            version.MainClass ?? "net.minecraft.client.main.Main", warnings);
+            version.MainClass ?? "net.minecraft.client.main.Main", warnings, missingLibs);
     }
 
     public void Dispose() => _downloader.Dispose();

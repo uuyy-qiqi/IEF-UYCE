@@ -69,6 +69,54 @@ public sealed class VersionResolver
         return merged;
     }
 
+    /// <summary>库坐标：group:artifact[:classifier]，不含版本号。</summary>
+    private static string CoordinateOf(Library lib)
+    {
+        var parts = lib.Name?.Split(':');
+        if (parts is null || parts.Length < 3) return lib.Name ?? "";
+
+        return parts.Length > 3
+            ? $"{parts[0]}:{parts[1]}:{parts[3]}"
+            : $"{parts[0]}:{parts[1]}";
+    }
+
+    /// <summary>
+    /// 库条目的合并键：名字 + natives 分类器 + rules 签名。
+    ///
+    /// 不能只用 name —— 旧式版本 JSON（1.12.2 时代，Cleanroom 0.7 就是这样）
+    /// 把「主 jar」和「各平台 natives」写成同名多条：
+    ///   {"name":"org.lwjgl:lwjgl:3.4.3","downloads":{"artifact":…}}
+    ///   {"name":"org.lwjgl:lwjgl:3.4.3","natives":{"windows":"natives-windows"},…}
+    /// 只按 name 合并的话，后者会把前者整个顶掉，主 jar 从此进不了 classpath。
+    /// 实测表现：`LWJGL: ~~ERROR~~ NoClassDefFoundError: org/lwjgl/Version`，
+    /// 以及 `org.lwjgl.sdl.SDL_LogOutputFunctionI` 找不到（明明是自家依赖）。
+    /// </summary>
+    private static string LibraryKey(Library lib)
+    {
+        var sb = new System.Text.StringBuilder(lib.Name ?? "");
+
+        if (lib.Natives is { Count: > 0 })
+        {
+            sb.Append("|nat:");
+            foreach (var kv in lib.Natives.OrderBy(k => k.Key, StringComparer.Ordinal))
+                sb.Append(kv.Key).Append('=').Append(kv.Value).Append(';');
+        }
+
+        if (lib.Rules is { Count: > 0 })
+        {
+            sb.Append("|rules:");
+            foreach (var r in lib.Rules)
+            {
+                sb.Append(r.Action).Append(':')
+                  .Append(r.Os?.Name ?? "").Append('/')
+                  .Append(r.Os?.Arch ?? "").Append('/')
+                  .Append(r.Os?.Version ?? "").Append(';');
+            }
+        }
+
+        return sb.ToString();
+    }
+
     /// <summary>parent 为已解析的父版本，child 为当前层。返回合并结果。</summary>
     public static VersionJson Merge(VersionJson parent, VersionJson child)
     {
@@ -78,7 +126,8 @@ public sealed class VersionResolver
         void AddOrReplace(Library lib)
         {
             if (lib.Name is null) { libs.Add(lib); return; }
-            if (byName.TryGetValue(lib.Name, out var idx))
+            var key = LibraryKey(lib);
+            if (byName.TryGetValue(key, out var idx))
             {
                 // 子版本覆盖父版本的同一个库
                 var old = libs[idx];
@@ -94,12 +143,31 @@ public sealed class VersionResolver
             }
             else
             {
-                byName[lib.Name] = libs.Count;
+                byName[key] = libs.Count;
                 libs.Add(lib);
             }
         }
 
-        foreach (var l in parent.Libraries ?? []) AddOrReplace(l);
+        // 子版本声明过同一个「坐标」（group:artifact[:classifier]，不含版本号）时，
+        // 父版本那一批同坐标条目要整批让位。
+        //
+        // 只按 name（含版本号）当键是不够的：1.12.2 自带
+        // org.apache.logging.log4j:log4j-api:2.8.1，Cleanroom 声明
+        // org.apache.logging.log4j:log4j-api:2.26.0 —— 名字不同，两条都留下，
+        // 老的排在 classpath 前面赢，于是 FML 初始化时炸在
+        //   NoSuchMethodError: LoggerContextFactory.isClassLoaderDependent()
+        // （这个方法是新 log4j 才有的）。
+        var childCoords = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var l in child.Libraries ?? [])
+            if (l.Name is not null) childCoords.Add(CoordinateOf(l));
+
+        foreach (var l in parent.Libraries ?? [])
+        {
+            // 子版本管着这个坐标（可能含各平台变体）—— 父版本的同坐标条目全部跳过
+            if (l.Name is not null && childCoords.Contains(CoordinateOf(l))) continue;
+            AddOrReplace(l);
+        }
+
         foreach (var l in child.Libraries ?? []) AddOrReplace(l);
 
         return new VersionJson

@@ -65,7 +65,9 @@ public partial class MainWindow : Window
         // 去之后即使把我们的 alpha 从 30% 调到 15% 也测不出任何变化 —— 看上去
         // 就是一块不透明的白板。分层窗口还给不了 DWM 材质，两者只能选一个：
         // 选了"真的能看见桌面"。
-        Console.WriteLine($"[backdrop] 分层透明 = {AllowsTransparency}");
+        //
+        // （这里以前还有一行 Console.WriteLine("[backdrop] 分层透明 = ...")：
+        //   调试时用的，会把探针输出污染一行，已删。）
 
         // 无边框窗口的圆角得自己跟 DWM 要（Win11 才有；Win10 会失败，忽略即可）
         WindowBackdrop.TryRoundCorners(this);

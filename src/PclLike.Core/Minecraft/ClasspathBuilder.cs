@@ -82,7 +82,25 @@ public static class ClasspathBuilder
                 };
             }
 
-            return new LibraryPlan(lib, Jar: null, NativeJar: native, ExtractExcludePrefix: "META-INF/");
+            // 主 jar 也要进 classpath —— 这一条以前是漏的。
+            //
+            // 老写法里 natives 常常和主 jar 分开声明（1.12.2 的 LWJGL2 就是），
+            // 但也有把两者写进同一条的（Cleanroom 0.7 的 LWJGL 3.4.3 全都是），
+            // 那种情况下只解压 natives、主 jar 永远进不了 classpath，
+            // 表现为 org.lwjgl.sdl.SDL_LogOutputFunctionI 这种「明明是自家依赖
+            // 却 ClassNotFound」的怪错（实际是根本没上 -cp）。
+            var main = downloads?.Artifact;
+            if (main is null && !string.IsNullOrEmpty(lib.Url))
+            {
+                var mainPath = lib.ToMavenPath();
+                main = new Artifact
+                {
+                    Path = mainPath,
+                    Url = lib.Url.TrimEnd('/') + "/" + mainPath,
+                };
+            }
+
+            return new LibraryPlan(lib, Jar: main, NativeJar: native, ExtractExcludePrefix: "META-INF/");
         }
 
         // 情形 B：普通库，或者 1.19+ 把 natives 写成独立 name 的库
@@ -122,12 +140,38 @@ public static class ClasspathBuilder
         IReadOnlyDictionary<string, bool>? features = null)
     {
         var result = new List<LibraryPlan>();
-        foreach (var lib in libraries)
+
+        // 1.12.2 + Cleanroom 会把 LWJGL 2.9.4 和 LWJGL 3.4.3 同时摆进 classpath，
+        // 而两者都带 org.lwjgl.PointerBuffer / org.lwjgl.BufferUtils 这类同名类 ——
+        // classpath 里谁在前谁赢，和 JSON 里怎么写的无关。
+        //
+        // 按 JSON 原顺序（LWJGL 2 在前）实测崩在 SDL 初始化：
+        //   java.lang.VerifyError: Bad type on operand stack
+        //   …'org/lwjgl/PointerBuffer' is not assignable to 'org/lwjgl/system/CustomBuffer'
+        //   at org.lwjgl.sdl.SDL_LogOutputFunctionI.<clinit>
+        // 原因是 LWJGL 3 内部的 LibFFI 拿到的是 LWJGL 2 的 PointerBuffer（不是 CustomBuffer）。
+        // Cleanroom 的 lwjgly 本来就是“把 LWJGL2 调用改写成 LWJGL3”的垫片，所以 LWJGL 3 必须在前。
+        // OrderBy 是稳定排序，组内仍保持 JSON 顺序。
+        var ordered = libraries.OrderBy(l => LwjglRank(l.Name)).ToList();
+
+        foreach (var lib in ordered)
         {
             var plan = Plan(lib, features);
             if (plan is not null) result.Add(plan);
         }
         return result;
+    }
+
+    /// <summary>
+    /// classpath 排序等级：LWJGL 3（org.lwjgl:）→ 其它 → LWJGL 2（org.lwjgl.lwjgl:）。
+    /// 两者有同名类时 LWJGL 3 必须赢，理由见 PlanAll 上的注释。
+    /// </summary>
+    private static int LwjglRank(string? name)
+    {
+        if (name is null) return 1;
+        if (name.StartsWith("org.lwjgl.lwjgl:", StringComparison.OrdinalIgnoreCase)) return 2; // LWJGL 2
+        if (name.StartsWith("org.lwjgl:", StringComparison.OrdinalIgnoreCase)) return 0;       // LWJGL 3
+        return 1;
     }
 
     /// <summary>组装 classpath 字符串（不含客户端 jar，调用方自行追加）。</summary>
