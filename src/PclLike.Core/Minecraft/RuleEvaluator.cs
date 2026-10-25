@@ -41,6 +41,25 @@ public static class RuleEvaluator
         return allowed;
     }
 
+    /// <summary>
+    /// 归一化 os.arch 的各种写法。
+    ///
+    /// 官方规范里只有 x86 / x86_64，但现实里各家不统一：Cleanroom 0.7 的
+    /// LWJGL 3.4.3 条目写的是 {"os":{"arch":"x64"}}，而我们以前只认 "x86_64"，
+    /// 于是 Windows 上那条 natives 规则被判 false、整个库条目被丢掉 ——
+    /// 表现为 LWJGL3 的 natives jar 一个都下不下来，游戏报
+    ///   UnsatisfiedLinkError: Failed to locate library: lwjgl.dll
+    /// （实测 1.12.2 + Cleanroom；同类写法在整合包里也很常见。）
+    /// </summary>
+    private static string NormalizeArch(string arch) => arch.ToLowerInvariant() switch
+    {
+        "x86_64" or "x64" or "amd64" or "x86-64" => "x86_64",
+        "x86" or "i386" or "i486" or "i586" or "i686" or "x86_32" or "x86-32" => "x86",
+        "arm64" or "aarch64" => "arm64",
+        "arm" or "arm32" or "armhf" or "armv7" or "armv7l" => "arm",
+        _ => arch.ToLowerInvariant(),
+    };
+
     private static bool Matches(Rule rule, IReadOnlyDictionary<string, bool>? features)
     {
         if (rule.Os is not null)
@@ -50,7 +69,8 @@ public static class RuleEvaluator
                 return false;
 
             if (rule.Os.Arch is not null &&
-                !string.Equals(rule.Os.Arch, CurrentOsArch, StringComparison.OrdinalIgnoreCase))
+                !string.Equals(NormalizeArch(rule.Os.Arch), NormalizeArch(CurrentOsArch),
+                    StringComparison.OrdinalIgnoreCase))
                 return false;
 
             // os.version 是正则，实际很少用，这里做保守处理

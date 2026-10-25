@@ -66,10 +66,13 @@ public sealed class InstanceInstaller
         Directory.CreateDirectory(nativesDir);
 
         var done = 0;
+        var withNatives = 0;
+        var missing = 0;
         foreach (var plan in plans)
         {
             var artifact = plan.NativeJar;
             if (artifact is null) continue;
+            withNatives++;
 
             var rel = (artifact.Path ?? plan.Library.ToMavenPath()).Replace('/', Path.DirectorySeparatorChar);
             var jar = Path.Combine(LibrariesDir, rel);
@@ -94,7 +97,7 @@ public sealed class InstanceInstaller
                 }
             }
 
-            if (!File.Exists(jar)) continue;
+            if (!File.Exists(jar)) { missing++; continue; }
 
             try
             {
@@ -106,6 +109,9 @@ public sealed class InstanceInstaller
                 log?.Invoke($"原生库解压失败 {Path.GetFileName(jar)}：{ex.Message}");
             }
         }
+
+        // 一行摘要进日志：出问题时能一眼看出是「没有 natives 计划」还是「jar 没下下来」。
+        log?.Invoke($"[原生库] 计划 {plans.Count} 个，带 natives 的 {withNatives} 个，解压 {done} 个，缺 jar {missing} 个");
 
         return done;
     }
