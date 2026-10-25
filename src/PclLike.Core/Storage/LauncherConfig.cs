@@ -73,6 +73,15 @@ public sealed class LauncherConfig
     /// <summary>正版登录方式：devicecode（设备代码流）/ browser（浏览器跳转）。</summary>
     [JsonPropertyName("authMode")] public string AuthMode { get; set; } = "devicecode";
 
+    /// <summary>
+    /// 代理怎么找：auto（跟着环境变量/系统设置，系统没开就探本机常见端口）/
+    /// manual（用 <see cref="ProxyUrl"/>）/ off（永远直连）。
+    /// </summary>
+    [JsonPropertyName("proxyMode")] public string ProxyMode { get; set; } = "auto";
+
+    /// <summary>手动模式下的代理地址，例如 http://127.0.0.1:7897。</summary>
+    [JsonPropertyName("proxyUrl")] public string? ProxyUrl { get; set; }
+
     [JsonIgnore]
     public IReadOnlyList<string> ExtraJvmArgs =>
         string.IsNullOrWhiteSpace(JvmArgs)

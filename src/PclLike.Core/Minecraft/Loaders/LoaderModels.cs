@@ -80,38 +80,46 @@ public static class LoaderHttp
     };
 
     private static HttpClient? _client;
+    private static readonly object ClientGate = new();
 
     /// <summary>
-    /// 全局 HttpClient。设了 <see cref="ProxyUrl"/> 就带上代理。
+    /// 全局 HttpClient。
+    ///
+    /// 代理优先级：显式设的 <see cref="ProxyUrl"/> > 统一的 <see cref="Net.ProxyResolver"/>
+    /// （它按"手动配置 → 环境变量 → 系统设置 → 本机常见端口探测"的顺序找）。
     ///
     /// NeoForge 的域名在部分网络下会被 DNS 污染（解析到 Facebook 的段），
-    /// 用户需要有代理才能装——所以代理必须可配。
+    /// 用户需要有代理才能装——所以代理必须真的能找到、而不只是"可配"。
     /// </summary>
     public static HttpClient Client
     {
         get
         {
-            if (_client is not null) return _client;
-
-            var handler = new HttpClientHandler
+            lock (ClientGate)
             {
-                AutomaticDecompression = System.Net.DecompressionMethods.All,
-                AllowAutoRedirect = true,
-            };
+                if (_client is not null) return _client;
 
-            if (!string.IsNullOrWhiteSpace(ProxyUrl))
-            {
-                handler.Proxy = new System.Net.WebProxy(ProxyUrl.Trim());
-                handler.UseProxy = true;
+                var handler = new HttpClientHandler
+                {
+                    AutomaticDecompression = System.Net.DecompressionMethods.All,
+                    AllowAutoRedirect = true,
+                };
+
+                var manual = Net.ProxyResolver.NormalizeUrl(ProxyUrl);
+                var setting = manual.Length > 0
+                    ? new Net.ProxySetting(manual, Net.ProxySource.Manual, Array.Empty<string>())
+                    : Net.ProxyResolver.Current;
+
+                Net.ProxyResolver.Apply(handler, setting);
+
+                _client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(60) };
+                _client.DefaultRequestHeaders.UserAgent.ParseAdd("PclLike/0.2 (+https://github.com/pcllike)");
+                return _client;
             }
-
-            _client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(60) };
-            _client.DefaultRequestHeaders.UserAgent.ParseAdd("PclLike/0.2 (+https://github.com/pcllike)");
-            return _client;
         }
     }
 
-    /// <summary>代理地址，如 http://127.0.0.1:7897。为空则直连。</summary>
+    /// <summary>代理地址，如 http://127.0.0.1:7897。为空就交给 ProxyResolver 自己找。</summary>
     public static string? ProxyUrl { get; set; }
 
     /// <summary>
@@ -126,8 +134,11 @@ public static class LoaderHttp
     /// <summary>改了代理地址后要让 Client 重建。</summary>
     public static void ResetClient()
     {
-        _client?.Dispose();
-        _client = null;
+        lock (ClientGate)
+        {
+            _client?.Dispose();
+            _client = null;
+        }
     }
 
     public static async Task<string> GetStringAsync(string url, CancellationToken ct)

@@ -700,12 +700,14 @@ public sealed class MicrosoftAuth
     {
         var handler = new HttpClientHandler { AutomaticDecompression = System.Net.DecompressionMethods.All };
 
-        // 复用全局代理配置（NeoForge 那边也需要）
-        if (!string.IsNullOrWhiteSpace(Minecraft.Loaders.LoaderHttp.ProxyUrl))
-        {
-            handler.Proxy = new System.Net.WebProxy(Minecraft.Loaders.LoaderHttp.ProxyUrl!);
-            handler.UseProxy = true;
-        }
+        // 代理：先看 LoaderHttp 上显式设的那个，否则交给统一的 ProxyResolver
+        // （登录接口在部分网络下同样要代理才通，不能只给下载用）
+        var manual = Net.ProxyResolver.NormalizeUrl(Minecraft.Loaders.LoaderHttp.ProxyUrl);
+        var setting = manual.Length > 0
+            ? new Net.ProxySetting(manual, Net.ProxySource.Manual, Array.Empty<string>())
+            : Net.ProxyResolver.Current;
+
+        Net.ProxyResolver.Apply(handler, setting);
 
         var c = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(60) };
         c.DefaultRequestHeaders.UserAgent.ParseAdd("PclLike/0.2");

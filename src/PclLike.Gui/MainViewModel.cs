@@ -868,6 +868,11 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>下载页「社区资源」那一屏。同样是延迟创建（要读实例列表）。</summary>
     public ContentViewModel Content => _content ??= new ContentViewModel(CurrentInstance, AppendLog, GameRoot);
 
+    private InstallerViewModel? _installer;
+
+    /// <summary>下载页「安装包」那一屏（加载器安装），同样是按需创建。</summary>
+    public InstallerViewModel Installer => _installer ??= new InstallerViewModel(CurrentInstance, AppendLog, GameRoot);
+
     /// <summary>
     /// 当前实例，**只读**。
     ///
@@ -918,17 +923,7 @@ public sealed class MainViewModel : ObservableObject
 
                     var baseName = plan?.Name;
                     if (string.IsNullOrWhiteSpace(baseName)) baseName = Path.GetFileNameWithoutExtension(c.FileName);
-                    baseName = baseName!.Trim();
-
-                    // 包名是人写的，目录名里不能出现的字符什么都可能有
-                    baseName = new string(baseName
-                        .Select(ch => "\\/:*?\"<>|".Contains(ch) || char.IsControl(ch) ? ' ' : ch)
-                        .ToArray());
-
-                    while (baseName.Contains("  ")) baseName = baseName.Replace("  ", " ");
-                    baseName = baseName.Trim();
-                    if (baseName.Length == 0) baseName = "拖入的整合包";
-                    if (baseName.Length > 40) baseName = baseName[..40].Trim();
+                    baseName = SanitizeInstanceName(baseName!, "拖入的整合包");
 
                     AppendLog(LogKind.Info, $"拖入整合包：{c.FileName} → 新建实例「{baseName}」");
 
@@ -955,6 +950,91 @@ public sealed class MainViewModel : ObservableObject
                     var msg = await Content.InstallLocalPackAsync(path, inst);
                     lines.Add($"{(msg.StartsWith("安装失败", StringComparison.Ordinal) ? "✗" : "✓")} "
                         + $"{c.FileName} → 新实例「{inst.Name}」\n{msg}");
+                    break;
+                }
+
+                case PclLike.Core.Content.DroppedKind.PackBundle:
+                {
+                    // 解压即玩的整包（一个 zip 里装着整个 .minecraft）。它和
+                    // ModPack 是两条路：没有清单要下，东西全在包里，要做的是
+                    // 把它摊开成一个现成实例。
+                    AppendLog(LogKind.Info, $"拖入整包：{c.FileName} —— 先数清楚包里有什么");
+
+                    PclLike.Core.Content.BundleLayout layout;
+                    try
+                    {
+                        layout = PclLike.Core.Content.BundleImporter.Inspect(path);
+                    }
+                    catch (Exception ex)
+                    {
+                        lines.Add($"✗ {c.FileName}：读不了这个包（{ex.GetType().Name}：{ex.Message}）");
+                        break;
+                    }
+
+                    AppendLog(LogKind.Info, $"    整包内容：{layout.SummaryText}");
+
+                    // 实例名用包里 .minecraft 上一级的目录名 —— 那是发布者起的
+                    // 名字，通常就是整合包名；实在没有才退回文件名。
+                    var bundleName = layout.InnerRoot.TrimEnd('/').Split('/').LastOrDefault();
+                    if (string.IsNullOrWhiteSpace(bundleName)) bundleName = Path.GetFileNameWithoutExtension(c.FileName);
+                    bundleName = SanitizeInstanceName(bundleName, "拖入的整包");
+
+                    AppendLog(LogKind.Info,
+                        $"    解压到新实例「{bundleName}」（约 {layout.SizeText}，要等几分钟）");
+
+                    var bundleInst = CreateInstance(bundleName, GuessBundleVersion(layout), isolated: true);
+
+                    if (bundleInst is null)
+                    {
+                        lines.Add($"✗ {c.FileName}：建不出实例（先选一个游戏版本，或者换个名字再拖）");
+                        break;
+                    }
+
+                    RefreshInstances();
+
+                    var r = await PclLike.Core.Content.BundleImporter.ImportAsync(
+                        path, layout, bundleInst.GameDir, GameRoot,
+                        s => AppendLog(LogKind.Normal, s));
+
+                    if (!r.Ok)
+                    {
+                        lines.Add($"✗ {c.FileName}：{r.Message}");
+                        break;
+                    }
+
+                    // 挂哪个版本：包里自带的那个加载器版本（懒人包的价值就在它
+                    // 自带的加载器和 Mod 上，挂回原版等于把 Mod 全废掉）。
+                    var pick = layout.PreferredVersionId is not null
+                               && r.VersionIds.Contains(layout.PreferredVersionId, StringComparer.OrdinalIgnoreCase)
+                        ? layout.PreferredVersionId
+                        : r.VersionIds.FirstOrDefault();
+
+                    var extra = "";
+
+                    if (pick is not null)
+                    {
+                        bundleInst.VersionId = pick;
+                        Store.Save(bundleInst);
+                        extra = $"\n版本：{pick}";
+
+                        var need = RequiredJavaMajor(pick);
+
+                        // JavaList 是扫描出来的。扫描没跑过时它是空的 ——
+                        // 空不等于"本机没有"，别在那种时候喊狼来了。
+                        if (need is > 0 && JavaList.Count > 0 && !JavaList.Any(j => j.MajorVersion >= need))
+                        {
+                            extra += $"\n注意：这个版本要 Java {need}，本机没找到够新的 —— 去「设置 → Java」下一个，不然启动会失败。";
+                            AppendLog(LogKind.Warning, $"整包要求 Java {need}，本机没有");
+                        }
+                    }
+                    else
+                    {
+                        extra = "\n（包里没有可用的版本 json，暂时挂的是现在选中的版本 —— 点「安装／补全文件」补齐）";
+                        AppendLog(LogKind.Warning, "整包里没找到可用的版本 json");
+                    }
+
+                    RefreshInstances();
+                    lines.Add($"✓ {c.FileName} → 新实例「{bundleInst.Name}」\n{r.Message}{extra}");
                     break;
                 }
 
@@ -1011,6 +1091,97 @@ public sealed class MainViewModel : ObservableObject
         catch { return null; }
     }
 
+    /// <summary>
+    /// 把包名擦干净成能当目录名的样子。
+    ///
+    /// 名字来自整合包的清单或包的目录名 —— 那是人写的，什么都可能有：
+    /// `:` `?` `|` 在 Windows 上根本建不出目录，结尾的 `.` 和空格也会被系统
+    /// 悄悄吃掉，于是实例名和磁盘上的目录名对不上。
+    /// </summary>
+    private static string SanitizeInstanceName(string? raw, string fallback)
+    {
+        var s = (raw ?? "").Trim();
+
+        s = new string(s
+            .Select(ch => "\\/:*?\"<>|".Contains(ch) || char.IsControl(ch) ? ' ' : ch)
+            .ToArray());
+
+        while (s.Contains("  ")) s = s.Replace("  ", " ");
+        s = s.Trim().TrimEnd('.', ' ');
+
+        if (s.Length > 40) s = s[..40].Trim().TrimEnd('.', ' ');
+        if (s.Length == 0) s = fallback;
+
+        return s;
+    }
+
+    /// <summary>
+    /// 这个版本要哪个 Java 大版本。不知道返回 null。
+    ///
+    /// 要顺着 inheritsFrom 往上找：加载器的 version json 通常自己不带
+    /// javaVersion，真正写着这个数的是它继承的那份原版 json。深度限 4 层 ——
+    /// 正常继承链最多两层，再多就是 json 坏了，别转不出来。
+    /// </summary>
+    private int? RequiredJavaMajor(string versionId, int depth = 0)
+    {
+        if (depth > 4) return null;
+
+        try
+        {
+            var json = Path.Combine(GameRoot, "versions", versionId, versionId + ".json");
+            if (!File.Exists(json)) return null;
+
+            var text = File.ReadAllText(json);
+
+            var m = System.Text.RegularExpressions.Regex.Match(text, "\"majorVersion\"\\s*:\\s*(\\d+)");
+            if (m.Success && int.TryParse(m.Groups[1].Value, out var major)) return major;
+
+            var parent = System.Text.RegularExpressions.Regex.Match(text, "\"inheritsFrom\"\\s*:\\s*\"([^\"]+)\"");
+            if (parent.Success) return RequiredJavaMajor(parent.Groups[1].Value, depth + 1);
+        }
+        catch
+        {
+            // 读不了就当不知道 —— 这句提醒是"顺手多说的"，不该因为它让导入失败
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 懒人包该挂哪个版本 —— 必须在解包**之前**就知道，因为实例得先建出来
+    /// （包要往它的游戏目录里解）。
+    ///
+    /// 包里自带的那个版本就是答案：解包时它的 versions/ 会被合并进公共目录，
+    /// 解完就能用。包里没有 versions/ 时才退到本机已装的版本。
+    /// </summary>
+    private string? GuessBundleVersion(PclLike.Core.Content.BundleLayout layout)
+    {
+        if (layout.PreferredVersionId is { Length: > 0 } pre) return pre;
+
+        try
+        {
+            var dir = Path.Combine(GameRoot, "versions");
+            if (Directory.Exists(dir))
+            {
+                var any = Directory.GetDirectories(dir)
+                    .Select(d => Path.GetFileName(d))
+                    .OfType<string>()
+                    .Where(id => id.Length > 0 && File.Exists(Path.Combine(dir, id, id + ".json")))
+                    .OrderByDescending(id => id,
+                        Comparer<string>.Create(PclLike.Core.Content.BundleImporter.CompareMcVersion))
+                    .FirstOrDefault();
+
+                if (any is not null) return any;
+            }
+        }
+        catch
+        {
+            // 列目录失败不该让导入停摆
+        }
+
+        return SelectedVersion?.Id;
+    }
+
     /// <summary>关窗口时把两个带网络连接的子 VM 收掉。没创建过就不创建。</summary>
     public void DisposeChildren()
     {
@@ -1024,6 +1195,52 @@ public sealed class MainViewModel : ObservableObject
 
         content?.Dispose();
         lobby?.Dispose();
+    }
+
+    // ─────────────────── 网络代理 ───────────────────
+    //
+    // 「读系统代理」这件事有个坑：.NET 默认只认 Windows"局域网设置"里那个
+    // 开关，而 Clash / v2ray 默认不打开它。用户明明开着代理，启动器却直连
+    // 超时。所以这里不是简单的"读一下"，而是按
+    // 手动配置 → 环境变量 → 系统设置 → 本机常见端口探测 的顺序去找，
+    // 找到什么、从哪儿找到的，都写在设置页上给他看。
+
+    /// <summary>当前生效的代理，写成一句人话。</summary>
+    public string ProxyStatus => PclLike.Core.Net.ProxyResolver.Current.DisplayText;
+
+    /// <summary>当前代理是从哪儿来的（"环境变量"/"系统设置"/"探测到本机代理"…）。</summary>
+    public string ProxySourceText => PclLike.Core.Net.ProxyResolver.Current.SourceText;
+
+    /// <summary>代理是不是在生效 —— 界面用它决定那一行显示什么颜色。</summary>
+    public bool ProxyIsActive => PclLike.Core.Net.ProxyResolver.Current.IsActive;
+
+    /// <summary>
+    /// 按配置重新找一遍代理，并把用到的 HttpClient 全部作废。
+    ///
+    /// 探测最多要花两秒（要挨个试本机端口），所以在后台线程上跑；
+    /// 找完再回界面刷新那一行字。
+    /// </summary>
+    public async Task ApplyProxyAsync(bool announce = true)
+    {
+        var mode = Config.ProxyMode;
+        var url = Config.ProxyUrl;
+
+        var setting = await Task.Run(() => PclLike.Core.Net.ProxyResolver.Refresh(mode, url))
+            .ConfigureAwait(true);
+
+        // 缓存的客户端里还带着老代理，必须丢掉
+        PclLike.Core.Minecraft.Loaders.LoaderHttp.ProxyUrl =
+            string.Equals(setting.Source.ToString(), "Manual", StringComparison.Ordinal)
+                ? setting.Url
+                : null;
+
+        PclLike.Core.Minecraft.Loaders.LoaderHttp.ResetClient();
+
+        OnPropertyChanged(nameof(ProxyStatus));
+        OnPropertyChanged(nameof(ProxySourceText));
+        OnPropertyChanged(nameof(ProxyIsActive));
+
+        if (announce) AppendLog(LogKind.Info, "网络代理：" + setting.DisplayText);
     }
 
     // ─────────────────── 百宝箱 ───────────────────

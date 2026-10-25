@@ -29,6 +29,9 @@ public sealed class Downloader : IDisposable
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
             AutomaticDecompression = System.Net.DecompressionMethods.None,
         };
+
+        // 原版文件（libraries / assets）在国内也常被卡，同样按统一规则找代理
+        Net.ProxyResolver.Apply(handler, null);
         _http = new HttpClient(handler)
         {
             Timeout = timeout ?? TimeSpan.FromMinutes(10),

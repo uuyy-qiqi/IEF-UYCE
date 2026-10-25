@@ -75,7 +75,12 @@ public partial class LoginWindow : Window
     {
         try
         {
-            var env = await CoreWebView2Environment.CreateAsync(null, UserDataFolder);
+            var env = await CoreWebView2Environment.CreateAsync(null, UserDataFolder, new CoreWebView2EnvironmentOptions(
+                // WebView2 自己会读 Windows 的"局域网设置"，但那个开关没打开时它
+                // 也看不见代理 —— 这里把启动器找到的代理显式告诉它，否则会出现
+                // "加载器能装（走了代理）但登录页打不开"这种一半一半的状态。
+                PclLike.Core.Net.ProxyResolver.WebView2Argument()));
+
             await Browser.EnsureCoreWebView2Async(env);
 
             var core = Browser.CoreWebView2;

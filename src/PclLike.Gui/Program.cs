@@ -57,6 +57,13 @@ public static class Program
         if (dropIdx >= 0)
             return DropProbe.Run(args.Skip(dropIdx).ToArray());
 
+        // 下载页整合包安装探针：PclLike.exe --content-pack [关键字] [--version 1.20.1] ...
+        // 拖放那条路和下载页那条路的后半段是同一批 Core 函数，但 VM 那层不一样 ——
+        // 出问题时得能分清是哪一段炸的。
+        var packIdx = Array.FindIndex(args, a => a.Equals("--content-pack", StringComparison.OrdinalIgnoreCase));
+        if (packIdx >= 0)
+            return ContentProbe.Run(args.Skip(packIdx).ToArray());
+
         // 常规启动：交给 WPF 的标准流程
         var app = new App();
         app.InitializeComponent();

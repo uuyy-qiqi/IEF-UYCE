@@ -255,6 +255,9 @@ public partial class MainWindow : Window
         PageSettings.Visibility = tab == "settings" ? Visibility.Visible : Visibility.Collapsed;
         PageTools.Visibility = tab == "tools" ? Visibility.Visible : Visibility.Collapsed;
 
+        // 安装包那一屏不跟大页签走：它是下载页左栏的一项，只在点左栏时露出来。
+        PageInstaller.Visibility = Visibility.Collapsed;
+
         // 下载页有两屏：内置版本列表（安装包）和社区资源浏览。
         // 这儿先都收起来，具体进哪一屏由下面 BuildNav 触发的 OnNavChanged 决定 ——
         // 左栏第一项是"安装包 → Minecraft"，所以默认进版本列表。
@@ -334,6 +337,19 @@ public partial class MainWindow : Window
     ///   · 社区资源（Mod / 整合包 / 数据包 / 资源包 / 光影包 / 世界 / 收藏夹）—— 走内容浏览那一屏。
     /// 两屏各自管自己的标题、搜索栏和列表，所以这里只切可见性 + 通知 ViewModel 换栏目。
     /// </summary>
+    /// <summary>安装包页：重查这个 MC 版本下有哪些加载器版本。</summary>
+    private async void InstallerRefresh_Click(object sender, RoutedEventArgs e)
+    {
+        await _vm.Installer.RefreshAsync();
+    }
+
+    /// <summary>安装包页：装这一行那个加载器版本。</summary>
+    private async void InstallerInstall_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not InstallerRow row) return;
+        await _vm.Installer.InstallAsync(row);
+    }
+
     private void ShowDownloadSection(string key)
     {
         var tab = key switch
@@ -348,15 +364,28 @@ public partial class MainWindow : Window
             _ => null,
         };
 
+        // 「安装包」里除 Minecraft 之外的几项走加载器安装屏（InstallerViewModel）。
+        // Minecraft 那一项就是原版，不归它管，仍然走版本列表。
+        if (key is "fabric" or "quilt" or "forge" or "neoforge" or "optifine")
+        {
+            PageDownload.Visibility = Visibility.Collapsed;
+            PageContent.Visibility = Visibility.Collapsed;
+            PageInstaller.Visibility = Visibility.Visible;
+            _vm.Installer.Activate(key);
+            return;
+        }
+
         if (tab is null)
         {
             // 安装包那一类：版本列表
+            PageInstaller.Visibility = Visibility.Collapsed;
             PageContent.Visibility = Visibility.Collapsed;
             PageDownload.Visibility = Visibility.Visible;
             return;
         }
 
         PageDownload.Visibility = Visibility.Collapsed;
+        PageInstaller.Visibility = Visibility.Collapsed;
         PageContent.Visibility = Visibility.Visible;
         _vm.Content.Activate(tab.Value);
     }
@@ -569,6 +598,9 @@ public partial class MainWindow : Window
         // 启动时按配置决定外观：先日志窗口，再默认页签
         if (_vm.Config.AutoExpandLog)
             OpenLogWindow();
+
+        // 代理要在联网之前定下来（探测本机端口最多两秒，放后台，不挡窗口）
+        _ = _vm.ApplyProxyAsync();
 
         var startTab = _vm.Config.DefaultTab;
         if (!string.IsNullOrWhiteSpace(startTab) && startTab != "launch")
@@ -1206,6 +1238,33 @@ public partial class MainWindow : Window
             _vm.AppendLog(LogKind.Warning, $"复制失败：{ex.Message}");
         }
     }
+
+    // ── 网络代理 ──
+
+    /// <summary>
+    /// 改代理模式后重新找一遍。
+    ///
+    /// 加 IsLoaded 判断是因为：绑定在窗口构造时就会把 SelectedValue 填进去，
+    /// 那一下同样会触发 SelectionChanged —— 那时候窗口还没显示，没必要去探测。
+    /// </summary>
+    private void ProxyMode_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded) return;
+
+        _vm.Config.ProxyMode = (sender as ComboBox)?.SelectedValue as string ?? "auto";
+        _vm.Persist();
+        _ = _vm.ApplyProxyAsync();
+    }
+
+    private void ProxyUrl_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded) return;
+
+        _vm.Persist();
+        _ = _vm.ApplyProxyAsync();
+    }
+
+    private void RefreshProxy_Click(object sender, RoutedEventArgs e) => _ = _vm.ApplyProxyAsync();
 
     /// <summary>
     /// 打开 Mod 管理窗口。

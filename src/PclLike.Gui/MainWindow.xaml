@@ -739,6 +739,115 @@
           </ScrollViewer>
         </Grid>
 
+        <!-- ════ 安装包页（加载器安装） ════
+             左栏「安装包」里除了 Minecraft 之外的那几项（Fabric / Quilt /
+             Forge / NeoForge / OptiFine）走这一屏：上面填 MC 版本、查这个
+             加载器有哪些版本、一行一个「安装这个」。
+             Minecraft 那一项不在这里 —— 它就是原版，走下载页自己的版本列表。 -->
+        <Grid x:Name="PageInstaller" Visibility="Collapsed" DataContext="{Binding Installer}">
+          <Grid Margin="20,16,20,16">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- 标题 -->
+            <StackPanel Grid.Row="0" Margin="2,0,0,12">
+              <TextBlock Text="{Binding Title}" FontSize="17" FontWeight="SemiBold"
+                         Foreground="{StaticResource TextBrush}"/>
+              <TextBlock Text="{Binding HintText}" FontSize="12" Margin="0,5,0,0" LineHeight="18"
+                         Foreground="{StaticResource TextSoftBrush}" TextWrapping="Wrap"/>
+            </StackPanel>
+
+            <!-- MC 版本 + 刷新 + 状态 -->
+            <Border Grid.Row="1" Style="{StaticResource Card}" Padding="14,12">
+              <Grid Visibility="{Binding IsSupported, Converter={StaticResource BoolVis}}">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="140"/>
+                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0" Text="Minecraft 版本" VerticalAlignment="Center"
+                           FontSize="12.5" Foreground="{StaticResource TextSoftBrush}" Margin="0,0,10,0"/>
+                <TextBox Grid.Column="1" x:Name="InstallerVersionBox" Height="30" FontSize="12.5"
+                         Padding="8,0" VerticalContentAlignment="Center"
+                         Text="{Binding McVersion, UpdateSourceTrigger=PropertyChanged}"/>
+                <Button Grid.Column="2" Content="刷新" Style="{StaticResource FlatButton}"
+                        Padding="14,6" Margin="10,0,0,0" Click="InstallerRefresh_Click"/>
+                <TextBlock Grid.Column="3" x:Name="InstallerStatusText" Text="{Binding StatusText}"
+                           VerticalAlignment="Center" Margin="12,0,0,0" FontSize="12"
+                           TextTrimming="CharacterEllipsis" Foreground="{StaticResource TextSoftBrush}"
+                           Visibility="{Binding HasStatus, Converter={StaticResource BoolVis}}"/>
+              </Grid>
+            </Border>
+
+            <!-- 这一项没做时（OptiFine）的说明 -->
+            <Border Grid.Row="2" Style="{StaticResource Card}" Padding="16,14" Margin="0,10,0,0"
+                    Visibility="{Binding IsUnsupported, Converter={StaticResource BoolVis}}">
+              <StackPanel>
+                <TextBlock Text="这一项还没做" FontSize="13.5" FontWeight="SemiBold"
+                           Foreground="{StaticResource TextBrush}"/>
+                <TextBlock Margin="0,8,0,0" FontSize="12.5" LineHeight="20" TextWrapping="Wrap"
+                           Foreground="{StaticResource TextSoftBrush}"
+                           Text="OptiFine 的官方渠道只提供一个图形安装器（要先有 Java，还得手动点下一步），没有可以自动列出并安装的接口。想去官网下它的安装器自己装；装完回到「启动」页点「安装／补全文件」把启动环境补齐，就能选它启动了。"/>
+              </StackPanel>
+            </Border>
+
+            <!-- 版本列表 -->
+            <Border Grid.Row="3" Style="{StaticResource Card}" Margin="0,10,0,0" Padding="0"
+                    Visibility="{Binding IsSupported, Converter={StaticResource BoolVis}}">
+              <Grid>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="14,10,10,10">
+                  <!-- ThinScroll 是 ScrollBar 的样式，不是 ScrollViewer 的 —— 直接挂在
+                       ScrollViewer 上会 XamlParseException（TargetType 不匹配）。 -->
+                  <ScrollViewer.Resources>
+                    <Style TargetType="ScrollBar" BasedOn="{StaticResource ThinScroll}"/>
+                  </ScrollViewer.Resources>
+                  <ItemsControl ItemsSource="{Binding Versions}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Grid Height="46" Margin="0,1">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                          </Grid.ColumnDefinitions>
+
+                          <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                            <StackPanel Orientation="Horizontal">
+                              <TextBlock Text="{Binding Name}" FontSize="13.5" FontWeight="SemiBold"
+                                         Foreground="{StaticResource TextBrush}"/>
+                              <Border Background="{StaticResource SelectedBrush}" CornerRadius="3"
+                                      Padding="6,1" Margin="8,0,0,0"
+                                      Visibility="{Binding HasLatestText, Converter={StaticResource BoolVis}}">
+                                <TextBlock Text="{Binding LatestText}" FontSize="10.5"
+                                           Foreground="{StaticResource PrimaryBrush}"/>
+                              </Border>
+                            </StackPanel>
+                            <TextBlock Text="{Binding Subtitle}" FontSize="11.5" Margin="0,3,0,0"
+                                       Foreground="{StaticResource TextMutedBrush}"/>
+                          </StackPanel>
+
+                          <Button Grid.Column="1" Content="安装这个" Style="{StaticResource FlatButton}"
+                                  Padding="14,6" VerticalAlignment="Center" Tag="{Binding}"
+                                  Click="InstallerInstall_Click"/>
+                        </Grid>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </ScrollViewer>
+
+                <TextBlock Text="{Binding EmptyText}" HorizontalAlignment="Center" VerticalAlignment="Center"
+                           FontSize="12.5" Foreground="{StaticResource TextMutedBrush}"
+                           Visibility="{Binding EmptyVisibility}"/>
+              </Grid>
+            </Border>
+          </Grid>
+        </Grid>
+
         <!-- ════ 设置页 ════ -->
         <ScrollViewer x:Name="PageSettings" Visibility="Collapsed"
                       VerticalScrollBarVisibility="Auto" Padding="22,18,22,18">
@@ -1147,6 +1256,51 @@
                             Click="OpenFolder_Click" Margin="0,0,8,0"/>
                     <Button Content="复制路径" Style="{StaticResource FlatButton}"
                             Click="CopyRoot_Click"/>
+                  </StackPanel>
+                </StackPanel>
+              </Border>
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                  <TextBlock Text="网络代理" FontSize="14" FontWeight="SemiBold"
+                             Foreground="{StaticResource TextBrush}" Margin="0,0,0,4"/>
+                  <TextBlock TextWrapping="Wrap" FontSize="12" Margin="0,0,0,12"
+                             Foreground="{StaticResource TextMutedBrush}"
+                             Text="下载 Mod、装加载器、正版登录都要联网。「自动」会依次看环境变量、系统设置；系统里代理开关没打开时，还会去试本机常见端口（Clash 的 7897、v2rayN 的 10809 之类）。"/>
+
+                  <Grid Margin="0,0,0,5">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="118"/>
+                      <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="代理" FontSize="13"
+                               Foreground="{StaticResource TextSoftBrush}" VerticalAlignment="Center"/>
+                    <ComboBox Grid.Column="1" SelectedValuePath="Tag"
+                              SelectedValue="{Binding Config.ProxyMode, Mode=TwoWay}"
+                              SelectionChanged="ProxyMode_Changed">
+                      <ComboBoxItem Content="自动（环境变量 → 系统设置 → 探测本机）" Tag="auto"/>
+                      <ComboBoxItem Content="手动指定地址" Tag="manual"/>
+                      <ComboBoxItem Content="不用代理（直连）" Tag="off"/>
+                    </ComboBox>
+                  </Grid>
+
+                  <Grid>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="118"/>
+                      <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="代理地址" FontSize="13"
+                               Foreground="{StaticResource TextSoftBrush}" VerticalAlignment="Center"/>
+                    <TextBox Grid.Column="1" x:Name="ProxyUrlBox" LostFocus="ProxyUrl_LostFocus"
+                             Text="{Binding Config.ProxyUrl, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="只在「手动指定地址」时生效。例如 http://127.0.0.1:7897"/>
+                  </Grid>
+
+                  <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                    <Button Content="重新检测" Style="{StaticResource FlatButton}"
+                            Click="RefreshProxy_Click" Margin="0,0,10,0"/>
+                    <TextBlock Text="{Binding ProxyStatus}" VerticalAlignment="Center"
+                               FontSize="12" TextWrapping="Wrap"
+                               Foreground="{StaticResource TextSoftBrush}"/>
                   </StackPanel>
                 </StackPanel>
               </Border>

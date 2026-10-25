@@ -543,16 +543,28 @@ public sealed class ModDownloader : IDisposable
         //
         // 所以这里做两手准备：默认直连（绝大多数国内直连 Modrinth 是通的，
         // 且比走代理稳），失败再退回系统代理。
+        // 代理：配置里明确指定 / 环境变量 / 系统设置里找到的，直接就用它 ——
+        // 走代理时不能再用"换 IP 重试"那套：ConnectCallback 拿到的会是代理的
+        // 地址，把代理的 IP 轮着换只会把连接搞坏。
+        //
+        // 唯独"探测到的本机代理"不直接接管：系统开关没开、只是本机某个端口
+        // 有东西在听（可能根本不是一个 HTTP 代理），这种情况下保持直连优先、
+        // 把它留给下面的备用通道 —— 别为了修一个超时把能下的变成下不了。
+        var proxy = Net.ProxyResolver.Current;
+        var proxyFirst = proxy.IsActive && proxy.Source != Net.ProxySource.Detected;
+
         _handler = new SocketsHttpHandler
         {
-            UseProxy = false,                       // 默认直连
+            UseProxy = proxyFirst,                  // 默认直连
             AutomaticDecompression =
                 System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate,
             ConnectTimeout = TimeSpan.FromSeconds(8),
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
             // Fastly 有些边缘 IP 会 TCP 挂死，在连接层换 IP 重试
-            ConnectCallback = ConnectRotatingAsync,
+            ConnectCallback = proxyFirst ? null : ConnectRotatingAsync,
         };
+
+        if (proxyFirst) Net.ProxyResolver.Apply(_handler, proxy);
 
         _http = new HttpClient(_handler, disposeHandler: false)
         {
@@ -566,30 +578,33 @@ public sealed class ModDownloader : IDisposable
         if (!string.IsNullOrWhiteSpace(CurseForgeApiKey))
             _http.DefaultRequestHeaders.Add("x-api-key", CurseForgeApiKey);
 
-        // 备用通道：走系统代理（用户可能只有代理能出网）
+        // 备用通道：走代理（用户可能只有代理能出网）
         _fallback = new Lazy<HttpClient>(() =>
         {
-            var h = new HttpClient(new SocketsHttpHandler
+            var h = new SocketsHttpHandler
             {
-                UseProxy = true,
-                Proxy = System.Net.WebRequest.GetSystemWebProxy(),
-                DefaultProxyCredentials = System.Net.CredentialCache.DefaultCredentials,
                 AutomaticDecompression =
                     System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate,
                 ConnectTimeout = TimeSpan.FromSeconds(15),
-                ConnectCallback = ConnectRotatingAsync,
-            })
+                ConnectCallback = proxyFirst ? null : ConnectRotatingAsync,
+            };
+
+            // 没找到代理时这一步等于直连（以前用的是 WebRequest.GetSystemWebProxy()，
+            // 系统开关没开的时候它给的是个"不用代理"的空壳，效果一样）
+            Net.ProxyResolver.Apply(h, proxy);
+
+            var client = new HttpClient(h)
             {
                 Timeout = TimeSpan.FromMinutes(5),
             };
 
-            h.DefaultRequestHeaders.UserAgent.ParseAdd(
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(
                 userAgent ?? "PclLike/1.0 (Minecraft launcher)");
 
             if (!string.IsNullOrWhiteSpace(CurseForgeApiKey))
-                h.DefaultRequestHeaders.Add("x-api-key", CurseForgeApiKey);
+                client.DefaultRequestHeaders.Add("x-api-key", CurseForgeApiKey);
 
-            return h;
+            return client;
         });
     }
 

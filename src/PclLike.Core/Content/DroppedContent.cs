@@ -8,6 +8,17 @@ public enum DroppedKind
     /// <summary>认不出来 —— 不要猜，直接告诉用户"我不知道这是什么"。</summary>
     Unknown = 0,
     ModPack,
+
+    /// <summary>
+    /// 解压即玩懒人包：一个 zip 里装着整个 .minecraft（自带 versions/、
+    /// libraries/、mods/、配置）。国内分享的整合包大多长这样。
+    ///
+    /// 它和 <see cref="ModPack"/> 是两回事：ModPack 只有一份清单，东西要照单
+    /// 去下；懒人包是东西已经全在包里了，要做的是"把它整个解出来当一个现成
+    /// 实例"，而不是往当前实例里塞文件。
+    /// </summary>
+    PackBundle,
+
     Mod,
     ResourcePack,
     ShaderPack,
@@ -77,6 +88,14 @@ public static class DroppedContentClassifier
             if (byName.Contains("modrinth.index.json") || byName.Contains("manifest.json"))
                 return new DroppedContent(DroppedKind.ModPack, path, name, "整合包（zip 里带清单）");
 
+            // 解压即玩懒人包：包里有整个 .minecraft，或者有 versions/<id>/<id>.json
+            // 这种"自带一份游戏"的结构。必须排在资源包/数据包/光影前面 ——
+            // 懒人包里也可能有 resourcepacks/、shaderpacks/ 这些目录，
+            // 但它们不是"这个包的身份"，只是包里的一部分内容。
+            if (LooksLikeBundle(entries, roots))
+                return new DroppedContent(DroppedKind.PackBundle, path, name,
+                    "解压即玩的整包（里面有完整的 .minecraft）");
+
             // 存档：level.dat 是存档的唯一标志（可能在根上，也可能被套一层目录）
             if (byBase.Contains("level.dat"))
                 return new DroppedContent(DroppedKind.World, path, name, "游戏存档（有 level.dat）");
@@ -127,6 +146,46 @@ public static class DroppedContentClassifier
 
     private static DroppedContent Unknown(string path, string name, string why)
         => new(DroppedKind.Unknown, path, name, why);
+
+    /// <summary>
+    /// zip 里是不是装着一整份游戏（解压即玩包）。
+    ///
+    /// 两个判据，命中一个就算：
+    ///  - 任意深度有 `.minecraft/` —— 一眼就能认出来，国内整合包最常见的形状；
+    ///  - 任意深度有 `versions/&lt;id&gt;/&lt;id&gt;.json` —— 有些不套 .minecraft 目录，
+    ///    直接把 versions/ 摆在根上（HMCL 的导出就长这样）。
+    ///
+    /// 只说"有 versions/ 目录"是不够的：资源包/光影包里也可能有叫 versions
+    /// 的东西。所以要求那个目录下真的躺着一份版本 json —— 那玩意儿只有
+    /// "一份能跑的游戏"才会有。
+    /// </summary>
+    private static bool LooksLikeBundle(List<string> entries, HashSet<string> roots)
+    {
+        foreach (var e in entries)
+        {
+            if (e.Contains("/.minecraft/", StringComparison.OrdinalIgnoreCase)
+                || e.StartsWith(".minecraft/", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        // versions/<id>/<id>.json —— 目录名和文件名同名，这是版本 json 的规矩
+        foreach (var e in entries)
+        {
+            var parts = e.Split('/');
+            for (var i = 0; i + 2 < parts.Length; i++)
+            {
+                if (!parts[i].Equals("versions", StringComparison.OrdinalIgnoreCase)) continue;
+
+                var id = parts[i + 1];
+                if (id.Length == 0) continue;
+
+                if (parts[i + 2].Equals(id + ".json", StringComparison.OrdinalIgnoreCase)) return true;
+            }
+        }
+
+        _ = roots;
+        return false;
+    }
 
     private static string SafeFileName(string path)
     {
