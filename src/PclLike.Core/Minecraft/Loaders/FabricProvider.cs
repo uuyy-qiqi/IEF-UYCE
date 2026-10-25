@@ -50,6 +50,12 @@ public sealed class FabricProvider : ILoaderProvider
         {
             list = await LoaderHttp.GetJsonAsync<List<LoaderEntry>>(url, ct).ConfigureAwait(false);
         }
+        catch (Exception ex) when (LoaderHttp.IsNotFound(ex))
+        {
+            // meta API 对"没有这个 MC 版本"返回 400。这不是故障，是"没有" ——
+            // 返回空列表，让界面说"这个版本没有可用的 Fabric"，而不是喊检查代理。
+            return [];
+        }
         catch (Exception ex)
         {
             throw new InvalidOperationException(LoaderHttp.Explain(ex, $"获取 Fabric 版本列表（{mcVersion}）"), ex);
@@ -129,6 +135,11 @@ public sealed class QuiltProvider : ILoaderProvider
         try
         {
             list = await LoaderHttp.GetJsonAsync<List<Entry>>(url, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (LoaderHttp.IsNotFound(ex))
+        {
+            // 同 Fabric：400 = 这个 MC 版本没有 Quilt，不是网络故障。
+            return [];
         }
         catch (Exception ex)
         {

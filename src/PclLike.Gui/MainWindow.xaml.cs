@@ -163,6 +163,7 @@ public partial class MainWindow : Window
                 AddNav("neoforge", "\uE90F", "NeoForge");
                 AddNav("fabric", "\uE8FD", "Fabric");
                 AddNav("quilt", "\uE8EF", "Quilt");
+                AddNav("legacyfabric", "\uE8FD", "Legacy Fabric");
                 break;
 
             case "settings":
@@ -366,7 +367,7 @@ public partial class MainWindow : Window
 
         // 「安装包」里除 Minecraft 之外的几项走加载器安装屏（InstallerViewModel）。
         // Minecraft 那一项就是原版，不归它管，仍然走版本列表。
-        if (key is "fabric" or "quilt" or "forge" or "neoforge" or "optifine")
+        if (key is "fabric" or "quilt" or "forge" or "neoforge" or "optifine" or "legacyfabric")
         {
             PageDownload.Visibility = Visibility.Collapsed;
             PageContent.Visibility = Visibility.Collapsed;

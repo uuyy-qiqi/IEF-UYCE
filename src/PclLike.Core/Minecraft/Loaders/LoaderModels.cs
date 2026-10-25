@@ -11,6 +11,18 @@ public enum LoaderKind
     Quilt,
     Forge,
     NeoForge,
+
+    /// <summary>Legacy Fabric：Fabric 的旧版本分支，覆盖 1.14.4 及更早（官方 Fabric 从 1.14 起）。</summary>
+    LegacyFabric,
+
+    /// <summary>OptiFine：严格说不是"加载器"，它是对原版打补丁的优化器，但安装流程和加载器一样。</summary>
+    OptiFine,
+
+    /// <summary>LiteLoader：1.12.2 及更早的轻量加载器，靠 launchwrapper 的 tweakClass 挂进游戏。</summary>
+    LiteLoader,
+
+    /// <summary>Cleanroom：1.12.2 的第三方 Forge 分支，安装方式跟 Forge 一样。</summary>
+    Cleanroom,
 }
 
 /// <summary>
@@ -41,6 +53,17 @@ public sealed record LoaderVersion(
         LoaderKind.Quilt     => $"quilt-loader-{Version}-{MinecraftVersion}",
         LoaderKind.Forge     => $"{MinecraftVersion}-forge-{Version}",
         LoaderKind.NeoForge  => $"neoforge-{Version}",
+
+        // Legacy Fabric 的 profile JSON 里 id 也是 fabric-loader-…，跟官方 Fabric 撞名。
+        // 1.13.2 / 1.14.4 这两个版本官方 Fabric 也支持，同时装上就会互相覆盖，
+        // 所以这里显式换成自己的前缀（安装时会改写 JSON 的 id）。
+        LoaderKind.LegacyFabric => $"legacy-fabric-loader-{Version}-{MinecraftVersion}",
+
+        // OptiFine 官方的命名就是 "1.20.1-OptiFine_HD_U_I5"。
+        LoaderKind.OptiFine   => $"{MinecraftVersion}-OptiFine_{Version}",
+        LoaderKind.LiteLoader => $"{MinecraftVersion}-LiteLoader{Version}",
+        LoaderKind.Cleanroom  => $"{MinecraftVersion}-cleanroom-{Version}",
+
         _                    => MinecraftVersion,
     };
 
@@ -50,6 +73,10 @@ public sealed record LoaderVersion(
         LoaderKind.Quilt     => $"Quilt {Version}",
         LoaderKind.Forge     => $"Forge {Version}",
         LoaderKind.NeoForge  => $"NeoForge {Version}",
+        LoaderKind.LegacyFabric => $"Legacy Fabric {Version}",
+        LoaderKind.OptiFine   => $"OptiFine {Version}",
+        LoaderKind.LiteLoader => $"LiteLoader {Version}",
+        LoaderKind.Cleanroom  => $"Cleanroom {Version}",
         _                    => "原版",
     };
 }
@@ -169,6 +196,28 @@ public static class LoaderHttp
     {
         var text = await GetStringAsync(url, ct).ConfigureAwait(false);
         return JsonSerializer.Deserialize<T>(text, Json);
+    }
+
+    /// <summary>
+    /// 这个异常是不是"服务端说没有这个东西"（400 / 404 / 410）。
+    ///
+    /// 拿它把两件事分开：一种是"这个 Minecraft 版本根本没有对应的加载器版本"
+    /// （meta API 对不存在的版本就是 400 —— Legacy Fabric 就是这样，它只支持
+    /// 1.13.2 及更早），另一种是真的连不上。前者不该弹"连接失败，检查代理"，
+    /// 那是把人往错的方向带。
+    /// </summary>
+    public static bool IsNotFound(Exception ex)
+    {
+        for (Exception? cur = ex; cur is not null; cur = cur.InnerException)
+        {
+            if (cur is HttpRequestException hre && hre.StatusCode is not null)
+            {
+                var code = (int)hre.StatusCode.Value;
+                if (code is 400 or 404 or 410) return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

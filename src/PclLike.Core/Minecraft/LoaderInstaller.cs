@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using PclLike.Core.Minecraft.Install;
 using PclLike.Core.Minecraft.Launch;
 using PclLike.Core.Minecraft.Loaders;
@@ -53,6 +54,11 @@ public sealed class LoaderInstaller : IDisposable
             LoaderKind.Quilt    => new QuiltProvider(config.QuiltMeta),
             LoaderKind.Forge    => new ForgeProvider(config.ForgePromotions),
             LoaderKind.NeoForge => new NeoForgeProvider(config.NeoForgeMaven),
+
+            // 这两个走自己的接口（Legacy Fabric 跟 Fabric 同构，OptiFine 走 bmclapi 镜像）
+            LoaderKind.LegacyFabric => new LegacyFabricProvider(config.LegacyFabricMeta),
+            LoaderKind.OptiFine     => new OptiFineProvider(config.OptiFineBase),
+
             _ => null,
         };
     }
@@ -117,6 +123,11 @@ public sealed class LoaderInstaller : IDisposable
 
         progress?.Report(new Progress($"安装 {target.DisplayName}", 0, 1));
 
+        // ---- OptiFine 的路跟别人都不一样，单独走 ----
+        // 它不是"挂到原版上的加载器"，而是把原版 jar 本身改掉。见方法注释。
+        if (kind == LoaderKind.OptiFine)
+            return await InstallOptiFineAsync(mcVersion, target, progress, onLog, ct).ConfigureAwait(false);
+
         // ---- 2. 拿最终版本 JSON ----
         //
         // Forge / NeoForge 这一步**不只是解析 JSON**：installer 的 processor 链
@@ -135,6 +146,11 @@ public sealed class LoaderInstaller : IDisposable
 
             case LoaderKind.Quilt:
                 finalJson = await new QuiltProvider().GetProfileJsonAsync(mcVersion, target.Version, ct)
+                    .ConfigureAwait(false);
+                break;
+
+            case LoaderKind.LegacyFabric:
+                finalJson = await new LegacyFabricProvider().GetProfileJsonAsync(mcVersion, target.Version, ct)
                     .ConfigureAwait(false);
                 break;
 
@@ -229,6 +245,166 @@ public sealed class LoaderInstaller : IDisposable
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// 装 OptiFine。
+    ///
+    /// OptiFine 跟别的加载器不一样：它不是"挂在原版上的一个 loader"，而是
+    /// **把原版 jar 改掉**。官方给的安装器是个 Swing 程序（Main-Class =
+    /// optifine.InstallerFrame），只能靠手点，而且会去改 launcher_profiles.json；
+    /// 但它自带一个能直接调用的补丁器：
+    ///
+    ///     java -cp OptiFine.jar optifine.Patcher &lt;原版.jar&gt; &lt;OptiFine.jar&gt; &lt;输出.jar&gt;
+    ///
+    /// （这行用法是 `java -cp OptiFine.jar optifine.Patcher` 不带参数跑出来的。）
+    ///
+    /// jar 里有 4800 多个 .class.xdelta，Patcher 把它们打到原版类上，产出的 jar
+    /// 就是"原版 + OptiFine 钩子"；OptiFine 自己的类则以 libraries 里一个库的形式
+    /// 挂进 classpath。两步都做完才算装好 —— 少了后者，打过补丁的类会去引用
+    /// 不存在的 optifine.* 然后崩在启动阶段。
+    /// </summary>
+    private async Task<Result> InstallOptiFineAsync(
+        string mcVersion,
+        LoaderVersion target,
+        IProgress<Progress>? progress,
+        Action<string>? onLog,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(target.InstallerUrl))
+            throw new InvalidOperationException("这个 OptiFine 版本没有下载地址。");
+
+        var warnings = new List<string>();
+        var id = target.ResultVersionId;                      // 1.20.1-OptiFine_HD_U_I5
+        var vdir = _baseInstaller.VersionDir(id);
+        Directory.CreateDirectory(vdir);
+
+        // 1) 原版 client jar —— 补丁的输入。必须先装过原版（InstallAsync 开头已经保证）
+        var baseJar = Path.Combine(_baseInstaller.VersionDir(mcVersion), $"{mcVersion}.jar");
+        if (!File.Exists(baseJar))
+            throw new InvalidOperationException($"找不到原版 {mcVersion} 的客户端 jar（{baseJar}），没法打补丁。");
+
+        // 2) OptiFine 本体。同一个 jar 既是补丁包，又是要挂到 classpath 上的库
+        var cacheDir = Path.Combine(_root, "cache", "optifine");
+        Directory.CreateDirectory(cacheDir);
+        var ofJar = Path.Combine(cacheDir, $"OptiFine_{mcVersion}_{target.Version}.jar");
+
+        if (!File.Exists(ofJar) || new FileInfo(ofJar).Length < 1024 * 1024)
+        {
+            progress?.Report(new Progress("下载 OptiFine", 0, 1));
+            var dl = await _downloader
+                .DownloadOneAsync(new Downloader.DownloadTask(target.InstallerUrl, ofJar), ct)
+                .ConfigureAwait(false);
+
+            if (!dl.Ok)
+                throw new InvalidOperationException(
+                    $"OptiFine 下载失败：{target.InstallerUrl}（网络问题的话，到「设置 → 杂项」确认代理配置）");
+        }
+
+        // 3) 打补丁。几千个 xdelta，慢一点，日志里说一声免得看着像卡死
+        var outJar = Path.Combine(vdir, $"{id}.jar");
+        progress?.Report(new Progress("打 OptiFine 补丁", 0, 1));
+        onLog?.Invoke($"[启动器] 正在给原版打 OptiFine 补丁（{Path.GetFileName(ofJar)}），这一步要一会儿……");
+
+        await Task.Run(() => RunOptiFinePatcher(ofJar, baseJar, outJar, onLog), ct).ConfigureAwait(false);
+
+        if (!File.Exists(outJar) || new FileInfo(outJar).Length < 1024 * 1024)
+            throw new InvalidOperationException("OptiFine 补丁跑完却没产出 jar，安装没成功。");
+
+        // 4) 把 OptiFine 的类放进 libraries（启动时它得在 classpath 上）
+        var libRel = ProcessorChain.MavenRelPath($"optifine:OptiFine:{mcVersion}_{target.Version}");
+        var libPath = Path.Combine(_baseInstaller.LibrariesDir, libRel.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(libPath)!);
+        File.Copy(ofJar, libPath, overwrite: true);
+
+        // 5) 版本 JSON：继承原版，多一个库，jar 就是刚打好的那个
+        var now = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'");
+        var json = new System.Text.Json.Nodes.JsonObject
+        {
+            ["id"] = id,
+            ["inheritsFrom"] = mcVersion,
+            ["time"] = now,
+            ["releaseTime"] = now,
+            ["type"] = "release",
+            ["libraries"] = new System.Text.Json.Nodes.JsonArray
+            {
+                new System.Text.Json.Nodes.JsonObject
+                {
+                    ["name"] = $"optifine:OptiFine:{mcVersion}_{target.Version}",
+                    ["downloads"] = new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["artifact"] = new System.Text.Json.Nodes.JsonObject
+                        {
+                            ["path"] = libRel,
+                            ["url"] = target.InstallerUrl,
+                        },
+                    },
+                },
+            },
+        };
+
+        var jsonPath = Path.Combine(vdir, $"{id}.json");
+        await File.WriteAllTextAsync(jsonPath, json.ToJsonString(LoaderHttp.Json), ct).ConfigureAwait(false);
+
+        onLog?.Invoke($"[启动器] OptiFine 装好了：{id}");
+        progress?.Report(new Progress("完成", 1, 1));
+
+        return new Result(id, jsonPath, LoaderKind.OptiFine, target.Version, warnings);
+    }
+
+    /// <summary>
+    /// 真的把 optifine.Patcher 跑起来。
+    ///
+    /// 用外部进程而不是自己实现 xdelta 解包：补丁格式、类名映射、chunk 处理的
+    /// 细节全在 OptiFine 自己那份代码里，跟着它走才不会随版本变化失效。
+    /// </summary>
+    private void RunOptiFinePatcher(string ofJar, string baseJar, string outJar, Action<string>? onLog)
+    {
+        var java = ResolveJavaForProcessors()
+            ?? throw new InvalidOperationException(
+                "没找到 Java，跑不了 OptiFine 的补丁器。到「设置 → Java」里装一个再试。");
+
+        if (File.Exists(outJar))
+        {
+            try { File.Delete(outJar); } catch { /* 删不掉就让 Patcher 自己覆盖 */ }
+        }
+
+        var psi = new ProcessStartInfo(java)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(outJar)!,
+        };
+        psi.ArgumentList.Add("-cp");
+        psi.ArgumentList.Add(ofJar);
+        psi.ArgumentList.Add("optifine.Patcher");
+        psi.ArgumentList.Add(baseJar);
+        psi.ArgumentList.Add(ofJar);
+        psi.ArgumentList.Add(outJar);
+
+        using var p = Process.Start(psi)
+            ?? throw new InvalidOperationException("启动 OptiFine 补丁器失败。");
+
+        var stdout = p.StandardOutput.ReadToEnd();
+        var stderr = p.StandardError.ReadToEnd();
+        p.WaitForExit();
+
+        var last = stdout.Trim();
+        if (last.Length > 0)
+        {
+            var lines = last.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            onLog?.Invoke("[OptiFine] " + lines[^1].Trim());
+        }
+
+        if (p.ExitCode != 0 || !File.Exists(outJar))
+        {
+            var detail = (stderr + " " + stdout).Trim();
+            if (detail.Length > 400) detail = detail[^400..];
+            throw new InvalidOperationException(
+                $"OptiFine 补丁器失败（退出码 {p.ExitCode}）。{detail}");
+        }
     }
 
     /// <summary>
@@ -329,6 +505,12 @@ public sealed class LoaderConfig
     public string? QuiltMeta { get; set; }
     public string? ForgePromotions { get; set; }
     public string? NeoForgeMaven { get; set; }
+
+    /// <summary>Legacy Fabric 的 meta（跟官方 Fabric 同构，只是域名不同）。</summary>
+    public string? LegacyFabricMeta { get; set; }
+
+    /// <summary>OptiFine 版本列表所在的镜像根（默认 bmclapi2）。</summary>
+    public string? OptiFineBase { get; set; }
 
     /// <summary>HTTP 代理，如 http://127.0.0.1:7897。</summary>
     public string? Proxy { get; set; }

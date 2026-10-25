@@ -68,6 +68,9 @@ public sealed class InstallerViewModel : ObservableObject
     private string _statusText = "";
     private bool _isBusy;
     private bool _isSupported = true;
+
+    /// <summary>查过一次、而且真的一个版本都没有。</summary>
+    private bool _queriedEmpty;
     private InstallerRow? _selectedRow;
 
     public InstallerViewModel(Func<GameInstance> instance, Action<LogKind, string> log, string gameRoot)
@@ -177,7 +180,11 @@ public sealed class InstallerViewModel : ObservableObject
             ? System.Windows.Visibility.Visible
             : System.Windows.Visibility.Collapsed;
 
-    public string EmptyText => _isBusy ? "正在查……" : "上面填个 Minecraft 版本，点「刷新」查可用版本。";
+    public string EmptyText => _isBusy
+        ? "正在查……"
+        : _queriedEmpty
+            ? $"{Title} 在这个 Minecraft 版本下没有可用版本 —— 换个版本号再「刷新」试试。"
+            : "上面填个 Minecraft 版本，点「刷新」查可用版本。";
 
     /// <summary>
     /// 切到某一项。MC 版本默认取当前实例猜出来的那个（跟内容页同一个规则，
@@ -191,21 +198,11 @@ public sealed class InstallerViewModel : ObservableObject
             "quilt" => LoaderKind.Quilt,
             "forge" => LoaderKind.Forge,
             "neoforge" => LoaderKind.NeoForge,
+            "optifine" => LoaderKind.OptiFine,
+            "legacyfabric" => LoaderKind.LegacyFabric,
             "fabric" => LoaderKind.Fabric,
             _ => Kind,
         };
-
-        if (key == "optifine")
-        {
-            Title = "OptiFine";
-            HintText = "OptiFine 没有可用的公开接口来列版本、也没有命令行安装方式 —— "
-                     + "官方只给你一个图形安装器，还要求先有 Java。这一项还没做。";
-            IsSupported = false;
-            Versions.Clear();
-            StatusText = "";
-            RaiseListChanged();
-            return;
-        }
 
         IsSupported = true;
         Title = Kind switch
@@ -213,11 +210,24 @@ public sealed class InstallerViewModel : ObservableObject
             LoaderKind.Quilt => "Quilt",
             LoaderKind.Forge => "Forge",
             LoaderKind.NeoForge => "NeoForge",
+            LoaderKind.OptiFine => "OptiFine",
+            LoaderKind.LegacyFabric => "Legacy Fabric",
             _ => "Fabric",
         };
-        HintText = $"选一个 Minecraft 版本，这里会列出 {Title} 的可用版本；"
-                 + "点「安装这个」就会把它装成一个新版本（原版会自动一起补上），"
-                 + "装完在「启动」页的版本列表里就能选。";
+        HintText = Kind switch
+        {
+            // OptiFine 这里以前写的是"没有公开接口、也没有命令行安装方式"——
+            // 两句都不成立了：版本列表走 BMCLAPI 镜像，安装靠 OptiFine.jar
+            // 自带的 optifine.Patcher。留着这句注释是给以后的人一个交代。
+            LoaderKind.OptiFine =>
+                "OptiFine 不是「挂上去」的加载器，而是直接给原版打补丁（版本列表来自 BMCLAPI 镜像）。"
+              + "装好后在「启动」页的版本列表里选它。",
+            LoaderKind.LegacyFabric =>
+                "Legacy Fabric 是给 1.13.2 及更早版本用的 Fabric 分支，版本列表来自 meta.legacyfabric.net。",
+            _ => $"选一个 Minecraft 版本，这里会列出 {Title} 的可用版本；"
+               + "点「安装这个」就会把它装成一个新版本（原版会自动一起补上），"
+               + "装完在「启动」页的版本列表里就能选。",
+        };
 
         var guess = ContentViewModel.GuessMcVersion(_instance().VersionId);
         if (McVersion.Trim().Length == 0 || guess.Length > 0)
@@ -225,6 +235,7 @@ public sealed class InstallerViewModel : ObservableObject
             McVersion = guess.Length > 0 ? guess : McVersion;
         }
 
+        _queriedEmpty = false;
         _ = RefreshAsync();
     }
 
@@ -259,9 +270,13 @@ public sealed class InstallerViewModel : ObservableObject
                     Versions.Add(new InstallerRow(v, latestStable is not null && v.Version == latestStable.Version));
                 }
 
+                _queriedEmpty = list.Count == 0;
                 RaiseListChanged();
                 StatusText = list.Count == 0
                     ? $"{mc} 没有可用的 {Title} 版本（是不是这个 MC 版本还不支持它？）"
+                      + (Kind == LoaderKind.LegacyFabric
+                          ? " Legacy Fabric 只支持 1.13.2 及更早，试试 1.12.2。"
+                          : "")
                     : list[0].StabilityKnown
                         ? $"共 {list.Count} 个 {Title} 版本，最新的稳定版是 {latestStable?.Version ?? "（没有稳定版）"}。"
                         : $"共 {list.Count} 个 {Title} 版本，最新的是 {list[0].Version}。";
@@ -273,6 +288,7 @@ public sealed class InstallerViewModel : ObservableObject
             OnUi(() =>
             {
                 Versions.Clear();
+                _queriedEmpty = false;
                 RaiseListChanged();
                 StatusText = "✗ " + LoaderHttp.Explain(ex, $"{Title} 版本列表");
                 IsBusy = false;
