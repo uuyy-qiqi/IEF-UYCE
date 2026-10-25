@@ -153,8 +153,12 @@ public sealed class InstanceInstaller
 
         if (clientArtifact?.Url is not null)
         {
+            // 客户端 jar 在官方是 /v1/objects/<sha1>/client.jar，镜像按版本 id 取 ——
+            // 这里必须把 id 交给 MirrorSource，改不了的地方它自己会原样返回。
+            var jarUrl = Net.MirrorSource.ClientJarUrl(clientArtifact.Url, versionId);
+
             var r = await _downloader.DownloadOneAsync(
-                new Downloader.DownloadTask(clientArtifact.Url, clientJar, clientArtifact.Sha1, clientArtifact.Size), ct)
+                new Downloader.DownloadTask(jarUrl, clientJar, clientArtifact.Sha1, clientArtifact.Size), ct)
                 .ConfigureAwait(false);
             if (!r.Ok) warnings.Add($"客户端 jar 下载失败：{r.Error}");
         }

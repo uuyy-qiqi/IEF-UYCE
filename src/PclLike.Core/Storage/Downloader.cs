@@ -124,7 +124,11 @@ public sealed class Downloader : IDisposable
 
     private async Task<long> FetchAsync(string url, string tmpPath, CancellationToken ct)
     {
-        using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        // 下载源在这里统一生效：清单 / 版本 json / 资源 / 类库 都走这条路，
+        // 一处改完全都跟着变。SHA1 校验在下面，镜像给错东西也装不进去。
+        var actual = Net.MirrorSource.Rewrite(url);
+
+        using var resp = await _http.GetAsync(actual, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
 
         await using var src = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);

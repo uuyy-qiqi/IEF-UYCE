@@ -276,8 +276,20 @@ public static class CursePack
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var lastLog = TimeSpan.Zero;
 
+        // 并发下 —— 串行下 264 个文件在这个网络上实测 3.2 秒/个（十几分钟）。
+        // 我以前做过一次"并行 4 个 vs 串行"的对比，结论是"并行没用"，那是拿
+        // 0.27 MB 的小包测的：小文件的时间全花在建立连接上，测不出并行收益。
+        // 真实场景里 CDN 是**每连接限速**，多开几条能成倍提速；6 条也不至于
+        // 被当成爬虫按死。
+        const int MaxParallel = 6;
+
+        var gate = new SemaphoreSlim(MaxParallel);
+        var lockObj = new object();
+
         async Task<bool> TryOneAsync(CursePackFile f)
         {
+            await gate.WaitAsync(ct).ConfigureAwait(false);
+
             try
             {
                 var saved = await fetch(f.ProjectId, f.FileId, modsDir, ct).ConfigureAwait(false);
@@ -287,7 +299,7 @@ public static class CursePack
                 var info = new FileInfo(Path.Combine(modsDir, saved));
                 if (!info.Exists) return false;
 
-                bytes += info.Length;
+                lock (lockObj) bytes += info.Length;
                 return true;
             }
             catch (OperationCanceledException)
@@ -298,40 +310,52 @@ public static class CursePack
             {
                 return false;
             }
-        }
-
-        foreach (var f in plan.Files)
-        {
-            ct.ThrowIfCancellationRequested();
-
-            if (await TryOneAsync(f).ConfigureAwait(false)) downloaded++;
-            else failed.Add(f);
-
-            if (stopwatch.Elapsed - lastLog > TimeSpan.FromSeconds(3))
+            finally
             {
-                lastLog = stopwatch.Elapsed;
-                log?.Invoke($"    已下 {downloaded}/{plan.Files.Count}（失败 {failed.Count}）");
+                gate.Release();
             }
         }
 
-        // 失败的再来一轮：CDN 偶发挂掉不该让用户重跑整个包（264 个文件重来一遍
-        // 是十几分钟的事），而包不齐时游戏会直接卡在 Mod 解析失败上。
-        if (failed.Count > 0)
+        async Task RunPassAsync(IReadOnlyList<CursePackFile> list)
         {
-            log?.Invoke($"    {failed.Count} 个文件第一轮没下下来，歇 3 秒再来一轮");
+            await Task.WhenAll(list.Select(async f =>
+            {
+                ct.ThrowIfCancellationRequested();
 
-            await Task.Delay(TimeSpan.FromSeconds(3), ct).ConfigureAwait(false);
+                var ok = await TryOneAsync(f).ConfigureAwait(false);
+
+                lock (lockObj)
+                {
+                    if (ok) downloaded++;
+                    else failed.Add(f);
+
+                    if (stopwatch.Elapsed - lastLog > TimeSpan.FromSeconds(3))
+                    {
+                        lastLog = stopwatch.Elapsed;
+                        log?.Invoke($"    已下 {downloaded}/{plan.Files.Count}（失败 {failed.Count}）");
+                    }
+                }
+            })).ConfigureAwait(false);
+        }
+
+        await RunPassAsync(plan.Files).ConfigureAwait(false);
+
+        // 没下下来的再来三轮，间隔递增（2/5/10 秒）。
+        // 两类失败混在一起：一类是 CDN 偶发挂掉或限流（歇一下就好），另一类是
+        // CurseForge 的公开端点干脆不给匿名下（404，重试也没用），所以三轮之后
+        // 还失败的就如实报出来，而不是无限重试。
+        for (var round = 1; round <= 3 && failed.Count > 0; round++)
+        {
+            var wait = round switch { 1 => 2, 2 => 5, _ => 10 };
+
+            log?.Invoke($"    {failed.Count} 个文件没下下来，歇 {wait} 秒重试（第 {round}/3 轮）");
+
+            await Task.Delay(TimeSpan.FromSeconds(wait), ct).ConfigureAwait(false);
 
             var retry = failed.ToList();
             failed.Clear();
 
-            foreach (var f in retry)
-            {
-                ct.ThrowIfCancellationRequested();
-
-                if (await TryOneAsync(f).ConfigureAwait(false)) downloaded++;
-                else failed.Add(f);
-            }
+            await RunPassAsync(retry).ConfigureAwait(false);
         }
 
         var sizeText = bytes >= 1024L * 1024 * 1024
@@ -343,10 +367,41 @@ public static class CursePack
         var message = ok
             ? $"装好了：{downloaded} 个文件（{sizeText}），配置 {overrides} 个"
             : $"下了 {downloaded} 个，{failed.Count} 个失败（{sizeText}）；"
-              + "缺文件时游戏会卡在 Mod 解析上 —— 再拖一次这个包会自动跳过已装好的";
+              + "缺文件时游戏会卡在 Mod 解析上 —— 再拖一次这个包会自动跳过已装好的，"
+              + "失败清单也写在 游戏目录\\下载失败.txt 里";
 
         if (!ok)
         {
+            // 光报一个数字没法行动 —— 把失败的 id 落一份到实例目录，带上 CurseForge
+            // 的文件页地址：多数失败是"公开端点不给匿名下"，用户上网页点一下就能补，
+            // 比在这儿死磕重试快得多。
+            var listPath = Path.Combine(instanceGameDir, "下载失败.txt");
+
+            try
+            {
+                var lines = new List<string>
+                {
+                    "# 这几个文件没能从 CurseForge 的公开下载端点拿到。",
+                    "# 两种情况：一、端点对匿名请求限流 —— 歇一会儿再拖一次这个包，会接着补；",
+                    "#           二、端点干脆不给匿名下 —— 那就打开下面的页面，在 Files 页",
+                    "#               手动下载，然后把文件丢进实例的 mods 目录。",
+                    "",
+                    $"# 已下好 {downloaded} 个，失败 {failed.Count} 个",
+                    "",
+                };
+
+                lines.AddRange(failed.Select(f =>
+                    $"{f.ProjectId}/{f.FileId}   https://www.curseforge.com/projects/{f.ProjectId}/files/{f.FileId}"));
+
+                File.WriteAllLines(listPath, lines, new System.Text.UTF8Encoding(false));
+
+                log?.Invoke($"    失败清单：{listPath}");
+            }
+            catch
+            {
+                // 写不了清单不影响装包本身
+            }
+
             log?.Invoke($"    失败的文件："
                 + string.Join("、", failed.Take(8).Select(f => $"{f.ProjectId}/{f.FileId}"))
                 + (failed.Count > 8 ? $" 等 {failed.Count} 个" : ""));

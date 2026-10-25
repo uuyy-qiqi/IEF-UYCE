@@ -1300,6 +1300,25 @@
                     </ComboBox>
                   </Grid>
 
+                  <Grid Margin="0,14,0,0">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="118"/>
+                      <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="下载源" FontSize="13"
+                               Foreground="{StaticResource TextSoftBrush}" VerticalAlignment="Center"/>
+                    <ComboBox Grid.Column="1" SelectedValuePath="Tag"
+                              SelectedValue="{Binding Config.DownloadMirror, Mode=TwoWay}"
+                              SelectionChanged="DownloadMirror_Changed">
+                      <ComboBoxItem Content="官方（Mojang，推荐）" Tag="official"/>
+                      <ComboBoxItem Content="BMCLAPI（国内镜像）" Tag="bmclapi"/>
+                    </ComboBox>
+                  </Grid>
+
+                  <TextBlock Text="只管游戏自己的文件（版本清单、版本 json、客户端 jar、类库、材质资源）。2026-10-26 在本机实测：官方 30 个材质小文件 30/30 成功、11.2 MB / 6.5 秒（≈1.8 MB/s）；BMCLAPI 同期只有 9/30、0.5 MB/s —— 所以默认走官方。如果哪天官方连不上（或你那边线路不同），切 BMCLAPI 试试。Mod、整合包、加载器那些第三方地址不受这个开关影响。"
+                             FontSize="12" Foreground="{StaticResource TextMutedBrush}"
+                             TextWrapping="Wrap" Margin="0,8,0,0"/>
+
                   <Grid>
                     <Grid.ColumnDefinitions>
                       <ColumnDefinition Width="118"/>

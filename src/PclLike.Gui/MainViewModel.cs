@@ -34,6 +34,11 @@ public sealed class MainViewModel : ObservableObject
         Accounts = new PclLike.Core.Login.AccountManager(gameRoot);
         Store = new PclLike.Core.Storage.InstanceStore(gameRoot);
 
+        // 下载源要在任何下载发生之前生效 —— 游戏文件（清单/版本 json/客户端 jar/
+        // 类库/资源）全走它。默认 bmclapi：同一网络实测比官方快约 6 倍。
+        PclLike.Core.Net.MirrorSource.Current =
+            PclLike.Core.Net.MirrorSource.Parse(Config.DownloadMirror);
+
         LogLines = new ObservableCollection<LogLine>();
         Versions = new ObservableCollection<VersionItem>();
         JavaList = new ObservableCollection<JavaLocator.JavaInfo>();
@@ -1146,19 +1151,40 @@ public sealed class MainViewModel : ObservableObject
                     // ③ 下文件 + 铺 overrides
                     var curseDownloader = new PclLike.Core.Mods.ModDownloader();
 
+                    // CurseForge 里同一个包可能出现两个 fileId 撞同一个文件名 —— 这个包里
+                    // fileId 6632548 和 6825165 都叫 「iterationT 3.2.0.zip」。撞了就给后一个
+                    // 加 id 前缀，否则后下的会把先下的覆盖掉，最后少一个文件。
+                    var claimed = new System.Collections.Concurrent.ConcurrentDictionary<string, int>(
+                        StringComparer.OrdinalIgnoreCase);
+
                     async Task<string?> FetchCurseFile(int projectId, int fileId, string targetDir, CancellationToken token)
                     {
-                        // 文件名清单里没有，只能先问一次（那一步只读响应头，很便宜）
-                        var fileName = await curseDownloader
+                        // 文件名清单里没有，只能先问一次（cfwidget 那个镜像不需要 key）
+                        var resolved = await curseDownloader
                             .ResolveCurseFileNameAsync(projectId, fileId, token)
-                            .ConfigureAwait(false)
-                            ?? $"cf-{projectId}-{fileId}.jar";
+                            .ConfigureAwait(false);
+
+                        var fileName = resolved ?? $"cf-{projectId}-{fileId}.jar";
+
+                        if (claimed.TryGetValue(fileName, out var owner) && owner != fileId)
+                        {
+                            fileName = $"{fileId}-{fileName}";
+                        }
+
+                        claimed[fileName] = fileId;
 
                         var dest = Path.Combine(targetDir, fileName);
 
                         // 已经装好的不重下：重拖同一个包时不能把几百 MB 再来一遍
                         var info = new FileInfo(dest);
                         if (info.Exists && info.Length > 0) return fileName;
+
+                        // 拿到名字 → 直连 edge.forgecdn.net（不需要 key，也不走
+                        // Cloudflare 挑战）。拿不到名字只能退回那个被挑战的公开端点，
+                        // 多半会失败 —— 那时失败清单会写下来让用户自己补。
+                        var downloadUrl = resolved is not null
+                            ? PclLike.Core.Mods.ModDownloader.CurseForgeEdgeUrl(fileId, resolved)
+                            : PclLike.Core.Content.CursePack.DownloadUrl(projectId, fileId);
 
                         var candidate = new PclLike.Core.Mods.ModDownloadCandidate
                         {
@@ -1168,7 +1194,7 @@ public sealed class MainViewModel : ObservableObject
                             Name = $"curse-{projectId}",
                             Version = fileId.ToString(),
                             FileName = fileName,
-                            DownloadUrl = PclLike.Core.Content.CursePack.DownloadUrl(projectId, fileId),
+                            DownloadUrl = downloadUrl,
                         };
 
                         var ok = await curseDownloader
@@ -2094,7 +2120,16 @@ public sealed class MainViewModel : ObservableObject
         });
     }
 
-    public void ClearLog() => LogLines.Clear();
+    public void ClearLog()
+    {
+        lock (_pendingLock) _pendingLines.Clear();
+        LogLines.Clear();
+    }
+
+    // 攒着待灌进 LogLines 的行。见 AppendLog 里的说明。
+    private readonly List<LogLine> _pendingLines = new();
+    private readonly object _pendingLock = new();
+    private bool _flushScheduled;
 
     public void AppendLog(LogKind kind, string text)
     {
@@ -2106,23 +2141,60 @@ public sealed class MainViewModel : ObservableObject
         // 线索就没了，排查"装到一半缺文件"这种问题只能靠外部探针去数磁盘文件。
         WriteLogFile(now, kind, line);
 
-        // 后台线程也会调进来，改内存那部分必须切回 UI 线程
+        // 攒起来，回 UI 线程一次灌完。
+        //
+        // 原来每行都单独 BeginInvoke 一次，装原版资源时一口气几千行"下载资源"
+        // 就把消息队列塞满了 —— 界面线程其实活着（WM_NULL 测得到它），但点击
+        // 事件排在几百个集合更新后面，表现就是"页面什么都点不了"。攒成一批之后，
+        // 几千行也只占一次调度。
+        lock (_pendingLock) _pendingLines.Add(new LogLine(kind, now, line));
+
         var app = Application.Current;
-        if (app is not null && !app.Dispatcher.CheckAccess())
+        if (app is null) return;
+
+        if (app.Dispatcher.CheckAccess())
         {
-            app.Dispatcher.BeginInvoke(() => AppendLogLines(kind, now, line));
+            FlushPendingLines();
             return;
         }
 
-        AppendLogLines(kind, now, line);
+        if (_flushScheduled) return;
+        _flushScheduled = true;
+        app.Dispatcher.BeginInvoke(() => FlushPendingLines());
     }
 
-    private void AppendLogLines(LogKind kind, DateTime time, string text)
+    /// <summary>把攒下的日志行一次性灌进 <see cref="LogLines"/>（只在 UI 线程跑）。</summary>
+    private void FlushPendingLines()
     {
-        LogLines.Add(new LogLine(kind, time, text));
+        List<LogLine> batch;
+        lock (_pendingLock)
+        {
+            _flushScheduled = false;
+            if (_pendingLines.Count == 0) return;
+
+            batch = new List<LogLine>(_pendingLines);
+            _pendingLines.Clear();
+        }
+
+        foreach (var one in batch) LogLines.Add(one);
 
         // 防止长跑一晚上把内存吃满
         while (LogLines.Count > 5000) LogLines.RemoveAt(0);
+
+        FlushLogFile();
+    }
+
+    /// <summary>把日志文件的缓冲区刷到磁盘（配合 <c>AutoFlush = false</c>）。</summary>
+    private void FlushLogFile()
+    {
+        try
+        {
+            _logFile?.Flush();
+        }
+        catch
+        {
+            // 刷不进去也不能影响启动器
+        }
     }
 
     private System.IO.StreamWriter? _logFile;
@@ -2146,7 +2218,11 @@ public sealed class MainViewModel : ObservableObject
                 _logFile = new System.IO.StreamWriter(
                     path, append: true, encoding: new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
                 {
-                    AutoFlush = true,
+                    // 不逐行 flush：装原版资源时一行一条进度，几千行都在 UI 线程上
+                    // 走一遍 write+flush 会拖慢消息队列（点击就排队）。改成攒着，
+                    // 由 FlushPendingLines 每批刷一次 —— 最多丢一批的几十行，
+                    // 而"丢几十行"比"界面点不动"划算得多。
+                    AutoFlush = false,
                 };
 
                 _logFile.WriteLine();

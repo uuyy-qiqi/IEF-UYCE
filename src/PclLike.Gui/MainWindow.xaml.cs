@@ -1143,6 +1143,9 @@ public partial class MainWindow : Window
         HideDropHint();
     }
 
+    /// <summary>正在处理一次拖放导入 —— 只管住"再来一次"，不再禁用整个窗口。</summary>
+    private bool _importBusy;
+
     protected override async void OnDrop(DragEventArgs e)
     {
         base.OnDrop(e);
@@ -1150,12 +1153,23 @@ public partial class MainWindow : Window
 
         if (e.Data.GetData(DataFormats.FileDrop) is not string[] paths || paths.Length == 0) return;
 
-        // 拖进来的可能是一堆文件，装整合包要几分钟 —— 别让用户看着界面
-        // 像卡死了却不知道在干什么（进度在状态栏和日志里）。
-        IsEnabled = false;
+        // 这里原来对**整个窗口**做了 `IsEnabled = false`，理由是"装整合包要几分钟，
+        // 别让用户看着界面像卡死了" —— 结果恰恰相反：窗口是活的，但所有控件全被
+        // 禁用了，连日志窗口都打不开。用户的原话是
+        //   「导入进去卡住了页面什么都点不了」
+        // 就是这一行造成的。现在只挡重复拖放，其余照常能点。
+        if (_importBusy)
+        {
+            _vm.SetStatus("上一批还在装，等它装完再拖 —— 进度在顶栏和日志里");
+            return;
+        }
+
+        _importBusy = true;
 
         try
         {
+            _vm.SetStatus("正在处理拖进来的文件…（进度在顶栏和日志里）");
+
             var summary = await _vm.DropFilesAsync(paths);
 
             RefreshInstanceCard();
@@ -1174,7 +1188,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            IsEnabled = true;
+            _importBusy = false;
         }
     }
 
@@ -1264,6 +1278,21 @@ public partial class MainWindow : Window
         _vm.Config.ProxyMode = (sender as ComboBox)?.SelectedValue as string ?? "auto";
         _vm.Persist();
         _ = _vm.ApplyProxyAsync();
+    }
+
+    /// <summary>
+    /// 切换游戏文件的下载源。绑定在窗口构造时也会触发一次，那时候 Config 已经
+    /// 被 MainViewModel 读过一遍并生效了，所以按 IsLoaded 挡掉，避免把还没加载完的
+    /// 默认值写回去。
+    /// </summary>
+    private void DownloadMirror_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded) return;
+
+        _vm.Config.DownloadMirror = (sender as ComboBox)?.SelectedValue as string ?? "bmclapi";
+        PclLike.Core.Net.MirrorSource.Current = PclLike.Core.Net.MirrorSource.Parse(_vm.Config.DownloadMirror);
+        _vm.Persist();
+        _vm.AppendLog(LogKind.Info, $"下载源：{PclLike.Core.Net.MirrorSource.DisplayName(PclLike.Core.Net.MirrorSource.Current)}");
     }
 
     private void ProxyUrl_LostFocus(object sender, RoutedEventArgs e)

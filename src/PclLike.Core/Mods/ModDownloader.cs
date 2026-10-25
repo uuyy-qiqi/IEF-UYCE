@@ -962,6 +962,75 @@ public sealed class ModDownloader : IDisposable
     // ────────────────────────────────────────────────────────────
 
     /// <summary>
+    /// 从 cfwidget 这个第三方只读镜像问文件名 —— **不需要任何 API key**。
+    ///
+    /// 为什么要它：CurseForge 唯一的"无需 key 也能拿到文件名"的路子（官方网页那个
+    /// 公开下载端点）已经被 Cloudflare 的机器人挑战接管，程序侧拿不到 307 后面的
+    /// 文件名。cfwidget 的 <c>/{projectId}</c> 会返回 <c>files[]</c>，每条带
+    /// <c>id</c> 和 <c>name</c>，拿名字够用了。
+    /// </summary>
+    public async Task<string?> ResolveCurseFileNameViaMirrorAsync(
+        int projectId, int fileId, CancellationToken ct = default)
+    {
+        if (projectId <= 0 || fileId <= 0) return null;
+
+        foreach (var url in new[]
+                 {
+                     $"https://api.cfwidget.com/{projectId}?version={fileId}",
+                     $"https://api.cfwidget.com/{projectId}",
+                 })
+        {
+            try
+            {
+                using var resp = await _http.GetAsync(url, ct).ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode) continue;
+
+                using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+                using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct)
+                    .ConfigureAwait(false);
+
+                if (!doc.RootElement.TryGetProperty("files", out var files)
+                    || files.ValueKind != JsonValueKind.Array)
+                {
+                    continue;
+                }
+
+                foreach (var f in files.EnumerateArray())
+                {
+                    if (!f.TryGetProperty("id", out var idEl) || !idEl.TryGetInt32(out var id)) continue;
+                    if (id != fileId) continue;
+
+                    var raw = f.TryGetProperty("name", out var n) ? n.GetString() : null;
+                    var name = Path.GetFileName(raw ?? "");
+
+                    if (!string.IsNullOrWhiteSpace(name)) return name;
+                }
+            }
+            catch
+            {
+                // 镜像挂了就试下一个地址，都失败就返回 null，上层会退回老路
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 直连 CDN 的地址：<c>edge.forgecdn.net/files/{id/1000}/{id%1000}/{名字}</c>。
+    ///
+    /// 这一段不需要 key、也不经过 Cloudflare，只要有名字就能下。名字里的空格和
+    /// 加号**必须转义** —— 真实文件名两种都有（`iterationT 3.2.0.zip` 和
+    /// `iterationT+3.2.0.zip`），不转义直接连不上（curl 报 000）。
+    /// </summary>
+    public static string CurseForgeEdgeUrl(int fileId, string fileName)
+    {
+        var a = fileId / 1000;
+        var b = fileId % 1000;
+
+        return $"https://edge.forgecdn.net/files/{a}/{b}/{Uri.EscapeDataString(fileName)}";
+    }
+
+    /// <summary>
     /// 只问「这个 projectID/fileID 的文件叫什么、真实地址在哪」，不下载。
     ///
     /// 为什么要单独一步：CurseForge 整合包的 manifest.json 只给 id，不给文件名。
@@ -976,6 +1045,15 @@ public sealed class ModDownloader : IDisposable
     public async Task<string?> ResolveCurseFileNameAsync(int projectId, int fileId, CancellationToken ct = default)
     {
         if (projectId <= 0 || fileId <= 0) return null;
+
+        // 先问不需要 key 的镜像。CurseForge 自己那个"公开下载端点"现在被 Cloudflare
+        // 的机器人挑战挡住了（响应体是 <title>Just a moment...</title>），程序拿不到
+        // 307 后面的文件名 —— 这是"PCL2 能装完、我们装不完"的真正差别：PCL2 用官方
+        // API（带 key）查名字，再直连 edge.forgecdn.net 取文件；关键就在"拿到名字"。
+        var viaMirror = await ResolveCurseFileNameViaMirrorAsync(projectId, fileId, ct)
+            .ConfigureAwait(false);
+
+        if (!string.IsNullOrWhiteSpace(viaMirror)) return viaMirror;
 
         var url = $"https://www.curseforge.com/api/v1/mods/{projectId}/files/{fileId}/download";
 
