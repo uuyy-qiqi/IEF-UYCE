@@ -526,6 +526,17 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
                 // 在 finally 里就被删了，装完之后再想读就得重新下载一遍。
                 plan = ModPackInstaller.ReadPlan(tmp);
 
+                // ★ 版本对不上就别装（真实事故：1.21.1 的包被装进 1.20.1 的实例，
+                //   208 个 Mod + 1123 个配置覆盖进去，界面上还写着"安装成功"）。
+                //   拦在这里，一个文件都还没落盘。
+                var mismatch = VersionMismatchReason(plan?.McVersion, inst);
+                if (mismatch is not null)
+                {
+                    _log(LogKind.Error, $"{Title}：「{row.Title}」{mismatch}");
+                    StatusMessage = mismatch;
+                    return;
+                }
+
                 result = await ModPackInstaller.InstallAsync(
                     tmp,
                     inst,
@@ -711,6 +722,62 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
         };
 
     /// <summary>
+    /// 从一个实例的实际版本号里取 MC 版本。
+    ///
+    /// 实例的 VersionId 有三种形状：<c>1.20.1</c>（原版）、<c>1.20.1-forge-47.4.28</c>
+    /// （Forge 把 MC 摆在前面）、<c>neoforge-47.1.106</c> / <c>fabric-loader-0.20.1-1.20.1</c>
+    /// （MC 摆在后面甚至不写）。所以：
+    ///   1) 开头就是 1.x 形式 → 直接用；
+    ///   2) 否则读 versions/&lt;id&gt;/&lt;id&gt;.json 的 <c>inheritsFrom</c>（Forge/Fabric 都写这个）；
+    ///   3) 都拿不到 → 返回空串，调用方按"不知道"处理（宁可不拦，也不能凭猜把
+    ///      正常安装挡掉）。
+    /// </summary>
+    private string McVersionOfInstance(GameInstance inst)
+    {
+        var id = inst.VersionId ?? "";
+        if (id.Length > 0 && char.IsDigit(id[0]))
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(id, @"^\d+\.\d+(?:\.\d+)?");
+            if (m.Success) return m.Value;
+        }
+
+        try
+        {
+            var json = Path.Combine(_launcherRoot, "versions", id, id + ".json");
+            if (File.Exists(json))
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(json));
+                if (doc.RootElement.TryGetProperty("inheritsFrom", out var p)
+                    && p.ValueKind == System.Text.Json.JsonValueKind.String)
+                    return p.GetString() ?? "";
+            }
+        }
+        catch { }
+
+        return "";
+    }
+
+    /// <summary>
+    /// 包要求的 MC 和实例不一致 → 返回该说的那句话；一致或拿不准 → null。
+    ///
+    /// 真实踩过的坑：把一个 1.21.1 的包拖进 1.20.1 的实例，启动器照装不误 ——
+    /// 208 个 Mod、1123 个配置被覆盖进去，那个实例直接废了，而界面上写的是
+    /// 「安装成功」。PCL 的做法是压根不装并说清为什么，这里照做。
+    /// </summary>
+    private string? VersionMismatchReason(string? packMc, GameInstance inst)
+    {
+        var want = (packMc ?? "").Trim();
+        if (want.Length == 0) return null;
+
+        var mc = McVersionOfInstance(inst);
+        if (mc.Length == 0) return null;
+        if (want.Equals(mc, StringComparison.OrdinalIgnoreCase)) return null;
+
+        return $"这个整合包要求 Minecraft {want}，而实例「{inst.Name}」是 {mc} —— "
+             + $"已经拦下，一个文件都没往里装。请先新建（或切到）一个 {want} 的实例，再装这个包。";
+    }
+
+    /// <summary>
     /// 装一个"本地文件"整合包（用户拖进来的，不是从 Modrinth 下的）。
     ///
     /// 和 InstallAsync 的整合包分支是同一条路，只是跳过"找版本 + 下载" ——
@@ -728,6 +795,15 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
             ModPackPlan? plan = null;
             try { plan = ModPackInstaller.ReadPlan(mrpackPath); }
             catch { /* 清单读不出来，装完再慢慢说 */ }
+
+            // ★ 拖进来的包同样先对版本。这里就是事故现场：用户把 1.21.1 的包拖到
+            //   一个 1.20.1 的实例上，Mod 全铺进去了才发现加载器装不上。
+            var mismatch = VersionMismatchReason(plan?.McVersion, target);
+            if (mismatch is not null)
+            {
+                _log(LogKind.Error, $"{Title}：{mismatch}");
+                return mismatch;
+            }
 
             StatusMessage = plan is null
                 ? "正在装整合包…"

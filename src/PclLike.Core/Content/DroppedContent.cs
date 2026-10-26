@@ -112,9 +112,15 @@ public static class DroppedContentClassifier
             // 这种"自带一份游戏"的结构。必须排在资源包/数据包/光影前面 ——
             // 懒人包里也可能有 resourcepacks/、shaderpacks/ 这些目录，
             // 但它们不是"这个包的身份"，只是包里的一部分内容。
-            if (LooksLikeBundle(entries, roots))
+            //
+            // 还要认"往里一层"的形状：懒人包十有八九做成 zip 根上只有一个文件夹
+            // （包名或作者名），mods/ config/ 全在那个文件夹里。只看根的 roots
+            // 会全部落空，整包被当成"认不出这是什么" —— 真实踩过：用户拖自己的
+            // 整合包，启动器说认不出，他以为功能坏了。
+            var inner = ShallowRoots(entries, roots);
+            if (LooksLikeBundle(entries, roots) || inner.Contains("mods"))
                 return new DroppedContent(DroppedKind.PackBundle, path, name,
-                    "解压即玩的整包（里面有完整的 .minecraft）");
+                    "解压即玩的整包（里面有 .minecraft 或 mods/）");
 
             // 存档：level.dat 是存档的唯一标志（可能在根上，也可能被套一层目录）
             if (byBase.Contains("level.dat"))
@@ -245,6 +251,32 @@ public static class DroppedContentClassifier
 
         _ = roots;
         return false;
+    }
+
+    /// <summary>
+    /// "往里再看一层"的根目录集合。
+    ///
+    /// 根上只有一项、且那一项是个目录时，把它的直接子目录当成新的根 ——
+    /// 懒人包/手工整合包最常见的形状就是这样（外面套一个作者命名的文件夹）。
+    /// 只下探一层：再深就不是"包的形状"了，那是乱套目录。
+    /// </summary>
+    private static HashSet<string> ShallowRoots(List<string> entries, HashSet<string> roots)
+    {
+        if (roots.Count != 1) return roots;
+
+        var prefix = roots.First() + "/";
+        var inner = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var e in entries)
+        {
+            if (!e.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+
+            var rest = e.Substring(prefix.Length);
+            var cut = rest.IndexOf('/');
+            if (cut > 0) inner.Add(rest.Substring(0, cut));
+        }
+
+        return inner.Count > 0 ? inner : roots;
     }
 
     private static string SafeFileName(string path)

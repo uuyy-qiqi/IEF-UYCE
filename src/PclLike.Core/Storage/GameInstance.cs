@@ -267,18 +267,8 @@ public sealed class InstanceStore
 
         if (deleteFiles)
         {
-            try
-            {
-                Directory.Delete(dir, recursive: true);
-            }
-            catch (IOException)
-            {
-                return false;
-            }
-            catch (UnauthorizedAccessException)
-            {
-                return false;
-            }
+            // 一次不行就重试 —— 见下面 DeleteDirectoryWithRetry 的注释。
+            if (!DeleteDirectoryWithRetry(dir)) return false;
         }
         else
         {
@@ -287,6 +277,63 @@ public sealed class InstanceStore
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// 删目录，带退避重试。
+    ///
+    /// 试一次就认输必然翻车：刚装完 208 个 Mod 的实例，Defender 还在扫那些 jar；
+    /// 启动器自己刚读过这个实例的游戏日志，句柄未必已经放手。这时候
+    /// <c>Directory.Delete</c> 抛 IOException，用户看到的是「删除实例失败 ——
+    /// 文件可能正被别的程序占着」，其实过两百毫秒就好了（真实日志里连着失败三次，
+    /// 用户每次删实例都撞上）。所以：清只读属性 + 6 次退避重试（累计约 2.7 秒），
+    /// 最后才认输。
+    /// </summary>
+    private static bool DeleteDirectoryWithRetry(string dir)
+    {
+        for (var i = 0; i < 6; i++)
+        {
+            try
+            {
+                Directory.Delete(dir, recursive: true);
+                return true;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return true;   // 已经没了，算成功
+            }
+            catch (IOException)
+            {
+                // 被占用：等一会儿再试
+            }
+            catch (UnauthorizedAccessException)
+            {
+                ClearReadOnly(dir);   // 只读属性会让递归删除直接失败，先清掉
+            }
+
+            Thread.Sleep(150 + i * 200);
+        }
+
+        return false;
+    }
+
+    /// <summary>尽力清掉目录树里的只读属性（单点失败就跳过，不因为它中断删除）。</summary>
+    private static void ClearReadOnly(string dir)
+    {
+        try
+        {
+            foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    var a = File.GetAttributes(f);
+                    if ((a & FileAttributes.ReadOnly) != 0)
+                        File.SetAttributes(f, a & ~FileAttributes.ReadOnly);
+                }
+                catch { }
+            }
+        }
+        catch { }
     }
 
     /// <summary>该实例的 Mod 目录（隔离模式下才有意义）。</summary>
