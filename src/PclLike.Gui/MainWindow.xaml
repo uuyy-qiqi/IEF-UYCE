@@ -632,9 +632,9 @@
                     <TextBlock Text="{Binding Name}" FontSize="13.5" FontWeight="SemiBold"
                                Foreground="{StaticResource TextBrush}"/>
                     <TextBlock FontSize="11.5" Foreground="{StaticResource TextMutedBrush}" Margin="0,4,0,0">
-                      <Run Text="{Binding SizeText}"/>
+                      <Run Text="{Binding SizeText, Mode=OneWay}"/>
                       <Run Text="　·　"/>
-                      <Run Text="{Binding LastWriteText}"/>
+                      <Run Text="{Binding LastWriteText, Mode=OneWay}"/>
                     </TextBlock>
                     <TextBlock Text="{Binding Path}" FontSize="11" TextTrimming="CharacterEllipsis"
                                Foreground="{StaticResource TextMutedBrush}" Margin="0,2,0,0"/>
