@@ -88,6 +88,43 @@ internal static class WindowShot
 
         PumpFor(Math.Min(settleSec, 3));
 
+        // --xamlcheck：把每个窗口都 new 一遍，看谁在加载 XAML 时就炸。
+        //
+        // 为什么需要它：编译能过**不代表**能加载。TargetType 不匹配这种错
+        // （把 RadioButton 的样式套给 Button）只在构造时才抛，
+        // TasksWindow 和 TextInputDialog 都栽在同一个 TopBarButton 上 ——
+        // 两次都是靠"真的开一次窗口"才发现的。以后新增窗口记得跑一遍这个。
+        if (args.Any(a => a.Equals("--xamlcheck", StringComparison.OrdinalIgnoreCase)))
+        {
+            var vmShot = win.ViewModelForShot();
+            var results = new List<string>();
+
+            void Check(string name, Func<object> make)
+            {
+                try
+                {
+                    var made = make();
+                    (made as Window)?.Close();
+                    results.Add($"ok   {name}");
+                }
+                catch (Exception ex)
+                {
+                    var msg = ex.Message.Replace("\r", " ").Replace("\n", " ");
+                    results.Add($"FAIL {name}  {ex.GetType().Name}: {msg}");
+                }
+            }
+
+            Check("MainWindow", () => new MainWindow());
+            Check("TasksWindow", () => new TasksWindow(vmShot));
+            Check("TextInputDialog", () => new TextInputDialog());
+            Check("LogWindow", () => new LogWindow(vmShot));
+            Check("InstancesWindow", () => win.InstancesForShot());
+            Check("AccountWindow", () => win.AccountForShot());
+            Check("LoginWindow", () => new LoginWindow(new PclLike.Core.Login.MicrosoftAuth(null)));
+
+            foreach (var r in results) Console.WriteLine(r);
+        }
+
         if (!string.IsNullOrEmpty(page))
         {
             try { win.NavigateForShot(page); }
@@ -157,6 +194,39 @@ internal static class WindowShot
         if (page == "log")
         {
             var dlg = new LogWindow(win.ViewModelForShot());
+            dlg.WindowStartupLocation = WindowStartupLocation.Manual;
+            dlg.Left = -10000;
+            dlg.Top = -10000;
+            dlg.ShowInTaskbar = false;
+            dlg.Width = w;
+            dlg.Height = h;
+            dlg.Show();
+            dlg.UpdateLayout();
+            PumpFor(3);
+            shotTarget = dlg;
+        }
+
+        // 任务管理窗：也单独开一个来截（左边三块统计 + 右边任务卡 + 分步清单）。
+        // 顺手喂几行假日志进去 —— 否则截到的是一张空清单，看不出分步长什么样。
+        if (page == "tasks")
+        {
+            var vmShot = win.ViewModelForShot();
+            vmShot.Tasks.Begin("CurseForge 整合包安装：AFoP Continue-1.5.1-fix");
+
+            foreach (var line in new[]
+            {
+                "正在铺配置… 412 个",
+                "已铺 412 个配置文件（overrides/）",
+                "装 Forge 47.4.28",
+                "已下 189/264（失败 4）",
+            })
+            {
+                vmShot.Tasks.OnLog(line);
+            }
+
+            vmShot.Tasks.SetPercent("下载额外文件", 71);
+
+            var dlg = new TasksWindow(vmShot);
             dlg.WindowStartupLocation = WindowStartupLocation.Manual;
             dlg.Left = -10000;
             dlg.Top = -10000;

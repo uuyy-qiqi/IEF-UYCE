@@ -12,6 +12,40 @@
         单独抽成一个类，因为新建实例、重命名、复制、加文件夹都要用它 ——
         写一份，四处调用（PCL 上也是同一个弹窗）。
     -->
+    <Window.Resources>
+        <!--
+            顶栏按钮样式必须 TargetType="Button" —— 共用字典里的 TopBarButton
+            是给左侧导航的 RadioButton 用的，套到 Button 上会在 Show() 时抛
+            XamlParseException（"RadioButton" TargetType 与元素"Button"不匹配），
+            窗口直接崩。任务管理窗踩过一次，这里是第二处。
+        -->
+        <Style x:Key="DlgTopButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Width" Value="42"/>
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bg" Background="{TemplateBinding Background}"
+                                CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="#33FFFFFF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
     <shell:WindowChrome.WindowChrome>
         <shell:WindowChrome CaptionHeight="0" ResizeBorderThickness="0"
                             GlassFrameThickness="0" CornerRadius="0"
@@ -28,7 +62,7 @@
                     <TextBlock x:Name="TitleText" Margin="14,0,0,0" VerticalAlignment="Center"
                                FontSize="13.5" Foreground="White"/>
                     <Button HorizontalAlignment="Right" Click="Cancel_Click"
-                            Style="{StaticResource TopBarButton}" Content="&#xE8BB;"
+                            Style="{StaticResource DlgTopButton}" Content="&#xE8BB;"
                             FontFamily="Segoe MDL2 Assets" FontSize="11" ToolTip="取消"/>
                 </Grid>
             </Border>

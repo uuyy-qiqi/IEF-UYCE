@@ -12,7 +12,7 @@ namespace PclLike.Gui
     /// </summary>
     public partial class TextInputDialog : Window
     {
-        private TextInputDialog()
+        internal TextInputDialog()
         {
             InitializeComponent();
         }

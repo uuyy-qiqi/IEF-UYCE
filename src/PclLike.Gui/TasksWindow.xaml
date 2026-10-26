@@ -14,6 +14,41 @@
         数据源就是启动器本来的日志流（TaskProgressViewModel.OnLog），
         所以安装代码不用为这个窗口改任何一行。
     -->
+    <Window.Resources>
+        <!--
+            自己一份顶栏按钮样式，不用共用字典里的 TopBarButton ——
+            那个的 TargetType 是 RadioButton（给左侧导航用的），
+            套到 Button 上会直接抛 XamlParseException：
+            「"RadioButton" TargetType 与元素"Button"的类型不匹配」，
+            窗口一 Show() 就崩。踩过一次，写在这儿免得再踩。
+        -->
+        <Style x:Key="TaskTopButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Width" Value="42"/>
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bg" Background="{TemplateBinding Background}"
+                                CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="#33FFFFFF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
     <shell:WindowChrome.WindowChrome>
         <shell:WindowChrome CaptionHeight="0" ResizeBorderThickness="6"
                             GlassFrameThickness="0" CornerRadius="0"
@@ -38,7 +73,7 @@
                     </Grid.ColumnDefinitions>
 
                     <Button Grid.Column="0" x:Name="BackButton" Click="Close_Click"
-                            Style="{StaticResource TopBarButton}" Margin="8,0,0,0"
+                            Style="{StaticResource TaskTopButton}" Margin="8,0,0,0"
                             Content="&#xE72B;" FontFamily="Segoe MDL2 Assets" FontSize="14"
                             ToolTip="关闭"/>
 
@@ -47,10 +82,10 @@
 
                     <StackPanel Grid.Column="2" Orientation="Horizontal">
                         <Button x:Name="MinButton" Click="Minimize_Click"
-                                Style="{StaticResource TopBarButton}" Content="&#xE921;"
+                                Style="{StaticResource TaskTopButton}" Content="&#xE921;"
                                 FontFamily="Segoe MDL2 Assets" FontSize="12" ToolTip="最小化"/>
                         <Button x:Name="CloseButton" Click="Close_Click"
-                                Style="{StaticResource TopBarButton}" Content="&#xE8BB;"
+                                Style="{StaticResource TaskTopButton}" Content="&#xE8BB;"
                                 FontFamily="Segoe MDL2 Assets" FontSize="12" ToolTip="关闭"/>
                     </StackPanel>
                 </Grid>
@@ -107,7 +142,7 @@
                                 <TextBlock Text="{Binding Title}" Foreground="#1A6FD4" FontSize="13.5"
                                            TextTrimming="CharacterEllipsis" Margin="0,0,28,0"/>
                                 <Button HorizontalAlignment="Right" VerticalAlignment="Top"
-                                        Click="CardClose_Click" Style="{StaticResource TopBarButton}"
+                                        Click="CardClose_Click" Style="{StaticResource TaskTopButton}"
                                         Background="Transparent" Foreground="{StaticResource TextMutedBrush}"
                                         Content="&#xE8BB;" FontFamily="Segoe MDL2 Assets" FontSize="11"
                                         ToolTip="收起这张任务卡"/>
