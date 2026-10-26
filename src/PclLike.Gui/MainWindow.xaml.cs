@@ -1188,6 +1188,11 @@ public partial class MainWindow : Window
         {
             _vm.SetStatus("正在处理拖进来的文件…（进度在顶栏和日志里）");
 
+            // 导入一开始就把「任务管理」窗开出来 —— 拖进去就能看着它一步步走，
+// 不用手动去工具里点。起个任务名，后面的进度由日志自己推（见 TaskProgress.cs）。
+            _vm.Tasks.Begin("导入：" + System.IO.Path.GetFileNameWithoutExtension(paths.FirstOrDefault() ?? "整合包"));
+            OpenTasksWindow();
+
             var summary = await _vm.DropFilesAsync(paths);
 
             RefreshInstanceCard();

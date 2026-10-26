@@ -262,6 +262,21 @@ namespace PclLike.Gui
                 return;
             }
 
+            // 「正在铺配置… N 个」「已铺 N 个配置文件（overrides/）」= 解压整合包文件
+            // （PCL 那个清单里也是这一条在最上面）
+            if (message.Contains("铺", StringComparison.Ordinal) &&
+                message.Contains("配置", StringComparison.Ordinal))
+            {
+                Step("解压整合包文件");
+                return;
+            }
+
+            // 「N 个文件没下下来，歇 X 秒重试（第 N/3 轮）」—— 不动清单，只是让人知道在重试
+            if (message.Contains("没下下来", StringComparison.Ordinal))
+            {
+                return;
+            }
+
             if (message.Contains("overrides", StringComparison.OrdinalIgnoreCase) &&
                 message.Contains("铺", StringComparison.Ordinal))
             {
@@ -310,6 +325,9 @@ namespace PclLike.Gui
 
         private static string StepNameFor(string message)
         {
+            // 句式就是 CursePack.cs 里本来在打的那几种，顺序不能乱：
+            // 「已下 189/264（失败 4）」必须先认，否则会掉到最后的兜底名
+            if (message.Contains("已下", StringComparison.Ordinal)) return "下载额外文件";
             if (message.Contains("资源", StringComparison.Ordinal)) return "下载原版资源文件";
             if (message.Contains("支持库", StringComparison.Ordinal) ||
                 message.Contains("类库", StringComparison.Ordinal)) return "下载游戏支持库文件";
