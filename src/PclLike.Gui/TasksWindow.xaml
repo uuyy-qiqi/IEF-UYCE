@@ -1,0 +1,184 @@
+<Window x:Class="PclLike.Gui.TasksWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="任务管理" Width="900" Height="620"
+        WindowStartupLocation="CenterOwner"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        FontFamily="Microsoft YaHei UI, Segoe UI" FontSize="12.5"
+        Foreground="{StaticResource TextBrush}">
+    <!--
+        照 PCL CE 的「任务管理」做的：
+        左边三块统计（总进度 / 下载速度 / 剩余文件），右边一张任务卡，
+        卡片里是这个任务的分步清单（✓ 已完成 / 百分比 进行中 / ⋯ 还没轮到）。
+        数据源就是启动器本来的日志流（TaskProgressViewModel.OnLog），
+        所以安装代码不用为这个窗口改任何一行。
+    -->
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="0" ResizeBorderThickness="6"
+                            GlassFrameThickness="0" CornerRadius="0"
+                            UseAeroCaptionButtons="False"/>
+    </shell:WindowChrome.WindowChrome>
+
+    <Border Background="#F2F6FD" BorderBrush="#2B4A7E" BorderThickness="1" CornerRadius="6">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="46"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- ══ 顶栏 ══ -->
+            <Border Grid.Row="0" Background="{StaticResource TopBarBrush}"
+                    CornerRadius="5,5,0,0" MouseLeftButtonDown="TopBar_MouseDown">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Button Grid.Column="0" x:Name="BackButton" Click="Close_Click"
+                            Style="{StaticResource TopBarButton}" Margin="8,0,0,0"
+                            Content="&#xE72B;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                            ToolTip="关闭"/>
+
+                    <TextBlock Grid.Column="1" Text="任务管理" Margin="12,0,0,0"
+                               VerticalAlignment="Center" FontSize="14" Foreground="White"/>
+
+                    <StackPanel Grid.Column="2" Orientation="Horizontal">
+                        <Button x:Name="MinButton" Click="Minimize_Click"
+                                Style="{StaticResource TopBarButton}" Content="&#xE921;"
+                                FontFamily="Segoe MDL2 Assets" FontSize="12" ToolTip="最小化"/>
+                        <Button x:Name="CloseButton" Click="Close_Click"
+                                Style="{StaticResource TopBarButton}" Content="&#xE8BB;"
+                                FontFamily="Segoe MDL2 Assets" FontSize="12" ToolTip="关闭"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ══ 主体 ══ -->
+            <Grid Grid.Row="1" Margin="10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="210"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- 左：三块统计 -->
+                <StackPanel Grid.Column="0" Margin="6,26,10,0">
+                    <StackPanel>
+                        <TextBlock Text="总进度" Foreground="#1A6FD4" HorizontalAlignment="Center"/>
+                        <Border Height="1.5" Background="#4DA8D8F0" Margin="0,6,0,0"/>
+                        <TextBlock Text="{Binding OverallText}" Foreground="#1A6FD4" FontSize="19"
+                                   HorizontalAlignment="Center" Margin="0,12,0,0"/>
+                    </StackPanel>
+
+                    <StackPanel Margin="0,40,0,0">
+                        <TextBlock Text="下载速度" Foreground="#1A6FD4" HorizontalAlignment="Center"/>
+                        <Border Height="1.5" Background="#4DA8D8F0" Margin="0,6,0,0"/>
+                        <TextBlock Text="{Binding SpeedText}" Foreground="#1A6FD4" FontSize="19"
+                                   HorizontalAlignment="Center" Margin="0,12,0,0"/>
+                    </StackPanel>
+
+                    <StackPanel Margin="0,40,0,0">
+                        <TextBlock Text="剩余文件" Foreground="#1A6FD4" HorizontalAlignment="Center"/>
+                        <Border Height="1.5" Background="#4DA8D8F0" Margin="0,6,0,0"/>
+                        <TextBlock Text="{Binding RemainingText}" Foreground="#1A6FD4" FontSize="19"
+                                   HorizontalAlignment="Center" Margin="0,12,0,0"/>
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- 右：任务卡 -->
+                <Grid Grid.Column="1">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0" Background="{StaticResource CardBrush}"
+                            BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1"
+                            CornerRadius="6" Padding="16,14">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <Grid Grid.Row="0">
+                                <TextBlock Text="{Binding Title}" Foreground="#1A6FD4" FontSize="13.5"
+                                           TextTrimming="CharacterEllipsis" Margin="0,0,28,0"/>
+                                <Button HorizontalAlignment="Right" VerticalAlignment="Top"
+                                        Click="CardClose_Click" Style="{StaticResource TopBarButton}"
+                                        Background="Transparent" Foreground="{StaticResource TextMutedBrush}"
+                                        Content="&#xE8BB;" FontFamily="Segoe MDL2 Assets" FontSize="11"
+                                        ToolTip="收起这张任务卡"/>
+                            </Grid>
+
+                            <ScrollViewer Grid.Row="1" Margin="0,12,0,0" VerticalScrollBarVisibility="Auto">
+                                <StackPanel>
+                                    <ItemsControl ItemsSource="{Binding Steps}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,4">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="46"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <TextBlock Grid.Column="0" Text="{Binding Glyph}"
+                                                               Foreground="{Binding GlyphBrush}"
+                                                               FontFamily="Segoe MDL2 Assets, Microsoft YaHei UI"
+                                                               FontSize="12" HorizontalAlignment="Center"
+                                                               VerticalAlignment="Center"/>
+                                                    <TextBlock Grid.Column="1" Text="{Binding Name}"
+                                                               Foreground="{StaticResource TextSoftBrush}"
+                                                               VerticalAlignment="Center"/>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+
+                                    <TextBlock x:Name="EmptyText" Text="还没有任务。拖一个整合包进来，或者点补全文件。"
+                                               Foreground="{StaticResource TextMutedBrush}"
+                                               Margin="0,8,0,0" TextWrapping="Wrap">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding HasTask}" Value="False">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Grid>
+                    </Border>
+
+                    <!-- 右下角那个圆形刷新按钮（PCL 上就是它，点了重新读一遍进度） -->
+                    <Button Grid.Row="1" HorizontalAlignment="Right" Margin="0,10,4,0"
+                            Width="46" Height="46" Click="Refresh_Click"
+                            Background="#1A6FD4" Foreground="White" BorderThickness="0"
+                            ToolTip="刷新进度">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="Bg" Background="{TemplateBinding Background}"
+                                        CornerRadius="23">
+                                    <TextBlock Text="&#xE72C;" FontFamily="Segoe MDL2 Assets"
+                                               FontSize="17" HorizontalAlignment="Center"
+                                               VerticalAlignment="Center" Foreground="White"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="Bg" Property="Background" Value="#1559AC"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                    </Button>
+                </Grid>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>

@@ -27,7 +27,7 @@ internal static class WindowShot
         // 悄悄改变另一个参数的含义（曾经把 "--settle" 当成了页面名）。
         var outPath = args.Length > 1 ? args[1] : "window.png";
 
-        var known = new[] { "launch", "download", "settings", "tools", "instances", "account", "login", "log" };
+        var known = new[] { "launch", "download", "settings", "tools", "instances", "account", "login", "log", "tasks" };
 
         var page = args.Skip(1).FirstOrDefault(a => known.Contains(a));
 

@@ -1758,6 +1758,9 @@
                   </StackPanel>
                   <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                               VerticalAlignment="Center">
+                    <Button Content="任务管理" Style="{StaticResource FlatButton}" Padding="14,6"
+                            Click="ShowTasks_Click" Margin="0,0,8,0"
+                            ToolTip="导入/安装的分步进度（照 PCL 的任务管理做的）"/>
                     <Button Content="展开" Style="{StaticResource FlatButton}" Padding="14,6"
                             Click="ShowLog_Click" Margin="0,0,8,0"/>
                     <Button Content="清空" Style="{StaticResource FlatButton}" Padding="14,6"

@@ -808,6 +808,24 @@ public partial class MainWindow : Window
 
     private void ShowLog_Click(object sender, RoutedEventArgs e) => OpenLogWindow();
 
+    /// <summary>「任务管理」窗（照 PCL CE 那个做的）：导入/安装的分步进度。</summary>
+    private TasksWindow? _tasksWindow;
+
+    private void OpenTasksWindow()
+    {
+        if (_tasksWindow is { IsLoaded: true })
+        {
+            _tasksWindow.Activate();
+            return;
+        }
+
+        _tasksWindow = new TasksWindow(_vm) { Owner = this };
+        _tasksWindow.Closed += (_, _) => _tasksWindow = null;
+        _tasksWindow.Show();
+    }
+
+    private void ShowTasks_Click(object sender, RoutedEventArgs e) => OpenTasksWindow();
+
     private void ClearLog_Click(object sender, RoutedEventArgs e) => _vm.ClearLog();
 
     // ── 奇妙小工具 → 百宝箱 ──

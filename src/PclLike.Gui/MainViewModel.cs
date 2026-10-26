@@ -1471,6 +1471,13 @@ public sealed class MainViewModel : ObservableObject
     }
 
     /// <summary>关窗口时把两个带网络连接的子 VM 收掉。没创建过就不创建。</summary>
+    /// <summary>
+    /// 「任务管理」窗的数据（见 TaskProgress.cs）。
+    /// 进度不是安装代码推过来的 —— 它订阅 LogLines，自己从日志里认
+    /// （「12/345 个文件」这类句式），所以安装流程一行都不用改。
+    /// </summary>
+    public TaskProgressViewModel Tasks { get; } = new();
+
     public void DisposeChildren()
     {
         // 顺手把字段清空：释放过的实例不该再被 Content / Lobby 发出去。
