@@ -76,6 +76,54 @@ public partial class InstancesWindow : Window
 
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
 
+    /// <summary>
+    /// 「添加已有文件夹」：把已经下好的 .minecraft 文件夹（或整合包文件夹）加成实例。
+    ///
+    /// 判定走的是拖放那套识别逻辑（认得 .minecraft、懒人包、整合包文件夹），
+    /// 这里不另写一份 —— 两条路识别结果必须一样，否则用户会遇到
+    /// "拖进去能认、从按钮进去不认"这种事。
+    /// </summary>
+    private async void AddFolder_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "选一个已经下好的 .minecraft 文件夹（或整合包文件夹）",
+            Multiselect = false,
+        };
+
+        if (dlg.ShowDialog() != true) return;
+        if (string.IsNullOrWhiteSpace(dlg.FolderName)) return;
+
+        var picked = dlg.FolderName.TrimEnd('\\', '/');
+
+        _vm.Tasks.Begin("导入文件夹：" + System.IO.Path.GetFileName(picked));
+        new TasksWindow(_vm) { Owner = this }.Show();
+
+        var summary = await _vm.DropFilesAsync(new[] { picked });
+        CurrentLabel.Text = summary;
+        _list.Rebuild(_vm.Instances);
+    }
+
+    /// <summary>「导入整合包」：选一个压缩包，走和拖进来一样的那套安装流程。</summary>
+    private async void ImportPack_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "选一个整合包压缩包",
+            Filter = "整合包压缩包|*.zip;*.mrpack|所有文件|*.*",
+            CheckFileExists = true,
+        };
+
+        if (dlg.ShowDialog() != true) return;
+
+        _vm.Tasks.Begin("导入：" + System.IO.Path.GetFileNameWithoutExtension(dlg.FileName));
+        new TasksWindow(_vm) { Owner = this }.Show();
+
+        var summary = await _vm.DropFilesAsync(new[] { dlg.FileName });
+        CurrentLabel.Text = summary;
+        _list.Rebuild(_vm.Instances);
+    }
+
     // ─────────────────── 列表 ───────────────────
 
     /// <summary>重建左栏。传 selectId 就选中那一条（新建/复制完走这条）。</summary>
@@ -183,7 +231,8 @@ public partial class InstancesWindow : Window
 
     private void Create_Click(object sender, RoutedEventArgs e)
     {
-        var name = NewNameBox.Text.Trim();
+        var name = TextInputDialog.Ask(this, "输入实例名称", "新实例的名字（中文可以）", "") ?? "";
+            if (name.Length == 0) return;
         if (name.Length == 0)
         {
             Warn("先给新实例起个名字。");
@@ -203,7 +252,7 @@ public partial class InstancesWindow : Window
             return;
         }
 
-        NewNameBox.Text = "";
+        
         Reload(inst.Id);
     }
 
@@ -240,7 +289,7 @@ public partial class InstancesWindow : Window
         if (_picked is null) return;
 
         // 新名字：下面输入框里写了就用那个，没写就让 Core 自己加后缀
-        var wanted = NewNameBox.Text.Trim();
+        var wanted = TextInputDialog.Ask(this, "复制实例", "复制出来的新实例叫什么名字？（直接确定就用原名 + 副本）", "") ?? "";
         var copy = _vm.CopyInstance(_picked, wanted.Length > 0 ? wanted : null);
         if (copy is null)
         {
@@ -248,7 +297,7 @@ public partial class InstancesWindow : Window
             return;
         }
 
-        NewNameBox.Text = "";
+        
         Reload(copy.Id);
     }
 

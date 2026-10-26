@@ -449,21 +449,31 @@
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
 
-        <StackPanel Grid.Column="0" Orientation="Horizontal">
-          <TextBox x:Name="NewNameBox" Width="160" Height="32" Padding="8,4"
-                   VerticalContentAlignment="Center"
-                   ToolTip="新实例的名字，中文可以"/>
-          <ComboBox x:Name="NewVersionBox" Width="148" Height="32" Margin="8,0,0,0"
-                    VerticalContentAlignment="Center"
-                    ToolTip="这个实例挂在哪个游戏版本上"/>
-          <CheckBox x:Name="NewIsolated" Content="独立游戏目录" Height="32" Margin="12,0,0,0"
-                    VerticalContentAlignment="Center" IsChecked="True"
-                    ToolTip="勾选：存档/Mod/设置都放在实例目录里，和别的版本互不干扰&#x0a;不勾选：跟启动器根目录共用（和原版行为一致）"/>
-          <!-- 这里必须覆盖 Padding：PrimaryButton 默认 18,10，配 Height=32
-               只剩 12px 放 14px 的字，中文会被压成一团。
-               18,6 → 内容区 20px，够 14px 字。 -->
-          <Button Content="新建实例" Style="{StaticResource PrimaryButton}"
-                  Padding="18,6" Height="32" Margin="12,0,0,0" Click="Create_Click"/>
+        <StackPanel Grid.Column="0">
+          <!-- 照 PCL「添加或导入」那一组做的：新建 / 添加已有文件夹 / 导入整合包。
+               名字不再用这个内联输入框问了 —— 改成 PCL 那种蓝顶栏弹窗
+               （TextInputDialog，新建/复制共用同一个）。 -->
+          <StackPanel Orientation="Horizontal">
+            <Button Content="新建实例" Style="{StaticResource PrimaryButton}"
+                    Padding="18,6" Height="32" Click="Create_Click"
+                    ToolTip="起个名字，从下面选的版本上建一个空实例"/>
+            <Button Content="添加已有文件夹" Style="{StaticResource FlatButton}"
+                    Padding="14,6" Height="32" Margin="8,0,0,0" Click="AddFolder_Click"
+                    ToolTip="把已经下好的 .minecraft 文件夹（或整合包文件夹）直接加成实例"/>
+            <Button Content="导入整合包" Style="{StaticResource FlatButton}"
+                    Padding="14,6" Height="32" Margin="8,0,0,0" Click="ImportPack_Click"
+                    ToolTip="选一个整合包压缩包，走和拖进来一样的那套安装流程"/>
+          </StackPanel>
+
+          <!-- 新建时用的两个参数：挂在哪个版本 / 要不要独立游戏目录 -->
+          <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+            <ComboBox x:Name="NewVersionBox" Width="148" Height="30"
+                      VerticalContentAlignment="Center"
+                      ToolTip="这个实例挂在哪个游戏版本上"/>
+            <CheckBox x:Name="NewIsolated" Content="独立游戏目录" Height="30" Margin="12,0,0,0"
+                      VerticalContentAlignment="Center" IsChecked="True"
+                      ToolTip="勾选：存档/Mod/设置都放在实例目录里，和别的版本互不干扰&#x0a;不勾选：跟启动器根目录共用（和原版行为一致）"/>
+          </StackPanel>
         </StackPanel>
 
         <StackPanel Grid.Column="1" Orientation="Horizontal">
