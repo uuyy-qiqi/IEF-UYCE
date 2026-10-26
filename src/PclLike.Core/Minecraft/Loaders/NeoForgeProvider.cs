@@ -268,20 +268,52 @@ public sealed class NeoForgeProvider : ForgeLikeProvider
         // 注意用 _apiBase 而不是 _mavenBase —— 见 DefaultApiBase 的说明。
         var url = $"{_apiBase}/api/maven/versions/releases/{groupPath}";
 
-        MavenVersions? mv;
-        try
+        Exception? lastError = null;
+
+        // 官方 maven 的 versions API。它不通是国内常态（见 LoaderHttp.MirrorBase 的说明），
+        // 所以不再一失败就抛 —— 先换镜像。
+        if (!LoaderHttp.NeoForgeHostDead)
         {
-            mv = await LoaderHttp.GetJsonAsync<MavenVersions>(url, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException(
-                LoaderHttp.Explain(ex, $"获取 NeoForge 版本列表（{mcVersion} → {prefix}x）") +
-                Environment.NewLine +
-                $"  NeoForge 仓库：{MavenBase}", ex);
+            try
+            {
+                var mv = await LoaderHttp.GetJsonAsync<MavenVersions>(url, ct).ConfigureAwait(false);
+                if (mv?.Versions is { Count: > 0 }) return mv.Versions;
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                lastError = ex;
+            }
         }
 
-        return mv?.Versions ?? [];
+        // 镜像：BMCLAPI 把同一棵 maven 树放在 /maven/ 下面，metadata.xml 里就是版本号。
+        // 用它而不是 /neoforge/list/{mc}，是因为它对两个 group（neoforge 与 1.20.1 的
+        // net/neoforged/forge）都适用，不用按坐标写两套解析。
+        try
+        {
+            var xml = await LoaderHttp
+                .GetStringAsync($"{LoaderHttp.MirrorBase}/{groupPath}/maven-metadata.xml", ct)
+                .ConfigureAwait(false);
+
+            var list = System.Text.RegularExpressions.Regex
+                .Matches(xml, @"<version>([^<]+)</version>")
+                .Select(m => m.Groups[1].Value.Trim())
+                .Where(s => s.Length > 0)
+                .ToList();
+
+            if (list.Count > 0) return list;
+
+            lastError ??= new InvalidOperationException("镜像的 maven-metadata.xml 里一个版本号都没有");
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            lastError = ex;
+        }
+
+        throw new InvalidOperationException(
+            LoaderHttp.Explain(lastError!, $"获取 NeoForge 版本列表（{mcVersion} → {prefix}x）") +
+            Environment.NewLine +
+            $"  NeoForge 仓库：{MavenBase}" + Environment.NewLine +
+            $"  镜像仓库：{LoaderHttp.MirrorBase}", lastError);
     }
 
     /// <summary>

@@ -2066,6 +2066,42 @@ public sealed class MainViewModel : ObservableObject
             var instance = EnsureInstanceForLaunch(id);
             AppendLog(LogKind.Info, $"实例：{instance.Name}（{instance.IsolationLabel}）→ {instance.GameDir}");
 
+            // ★ 启动前自检：**有 Mod、版本却是纯原版** —— 最恶心的一种静默失败。
+            //
+            // 2026-10-26 用户就是这么栽的：Modrinth 整合包拖进来，205 个 Mod 一个不差地
+            // 解压到位，紧接着"自动装加载器"那一步因为 maven.neoforged.net 整站超时失败了
+            // （日志里就一行 [Error]，界面照旧写着"已新建实例"），然后以**原版 1.21.1**
+            // 启动 —— 他进游戏一看，模组一个都没加载，日志里也没有第二句话。
+            //
+            // 加载器没装上时，宁可拦下来把话说清楚，也不能让他进一个"看起来正常、
+            // 实际啥都没有"的世界。这里用 instance.GameDir 而不是 SelectedInstance，
+            // 因为那才是这次启动真正要用的目录。
+            if (!LooksLikeLoaderVersion(id))
+            {
+                var modsDir = Path.Combine(instance.GameDir, "mods");
+                var modCount = Directory.Exists(modsDir)
+                    ? Directory.EnumerateFiles(modsDir, "*.jar", SearchOption.TopDirectoryOnly).Count()
+                    : 0;
+
+                if (modCount > 0)
+                {
+                    AppendLog(LogKind.Error,
+                        $"这个实例里有 {modCount} 个 Mod，但版本「{id}」是纯原版 —— 没有加载器，" +
+                        "进游戏一个 Mod 都不会加载，已经拦下。");
+                    AppendLog(LogKind.Info,
+                        "请到「下载」页给这个实例装上它要的加载器（Modrinth 包里声明的那个，" +
+                        "一般是 NeoForge / Forge / Fabric），装完再启动。");
+                    StatusText = "✗ 缺加载器，已拦下";
+                    return;
+                }
+            }
+
+            static bool LooksLikeLoaderVersion(string versionId)
+            {
+                string[] marks = ["-forge-", "-neoforge-", "neoforge", "-fabric", "-quilt", "-liteloader", "-optifine", "cleanroom"];
+                return marks.Any(m => versionId.Contains(m, StringComparison.OrdinalIgnoreCase));
+            }
+
             // 版本 JSON 里没写 javaVersion 的老版本按 8 处理，和 Core 保持一致
             var options = new LaunchService.LaunchOptions
             {

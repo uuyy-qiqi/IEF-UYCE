@@ -178,19 +178,72 @@ public static class LoaderHttp
         }
     }
 
-    public static async Task<string> GetStringAsync(string url, CancellationToken ct)
+    /// <summary>
+    /// NeoForge 的 maven 在国内经常**整站不可达** —— 不是 DNS 污染到假 IP，就是
+    /// 干脆所有端点都超时（2026-10-26 实测：`/api/maven/...` 与
+    /// `/releases/.../maven-metadata.xml` 两个端点都是 60 秒无响应，而同一时刻
+    /// BMCLAPI 的 `/neoforge/list/1.21.1` 与 `/maven/.../maven-metadata.xml` 都是 200）。
+    ///
+    /// 后果特别难查：Modrinth 整合包拖进来，Mod 解压得好好的，加载器那一步失败，
+    /// 然后**以原版启动**——用户进游戏发现一个 Mod 都没加载，却看不出哪里错了。
+    ///
+    /// BMCLAPI 镜像了同一棵 maven 树，路径只差一个前缀（`/releases/` → `/maven/`），
+    /// 所以这里做一层 URL 改写 + 一次重试，把整条下载链路（版本列表、installer、
+    /// processor 依赖）一起救回来。
+    /// </summary>
+    public static string MirrorBase { get; set; } = "https://bmclapi2.bangbang93.com/maven";
+
+    private const string NeoForgeHost = "maven.neoforged.net";
+    private static readonly HashSet<string> DeadHosts = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>这个仓库已经确认不通了 —— 后面的请求直接走镜像，别再干等超时。</summary>
+    public static bool NeoForgeHostDead => DeadHosts.Contains(NeoForgeHost);
+
+    /// <summary>把官方 URL 换写成镜像 URL；不是这个仓库就返回 null。</summary>
+    public static string? MirrorUrlFor(string url)
     {
-        using var resp = await Client.GetAsync(url, ct).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
-        return await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        const string official = "https://maven.neoforged.net/releases/";
+        return url.StartsWith(official, StringComparison.OrdinalIgnoreCase)
+            ? MirrorBase + "/" + url[official.Length..]
+            : null;
     }
 
-    public static async Task<byte[]> GetBytesAsync(string url, CancellationToken ct)
+    private static async Task<T> WithMirrorAsync<T>(string url, Func<string, Task<T>> fetch, CancellationToken ct)
     {
-        using var resp = await Client.GetAsync(url, ct).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
-        return await resp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+        var mirror = MirrorUrlFor(url);
+
+        if (mirror is null || !DeadHosts.Contains(NeoForgeHost))
+        {
+            try
+            {
+                return await fetch(url).ConfigureAwait(false);
+            }
+            catch (Exception) when (!ct.IsCancellationRequested && mirror is not null)
+            {
+                // 记下来。不记的话，装一个 Forge/NeoForge 要为**每个**库文件
+                // 各干等一次超时，几分钟变几十分钟。
+                DeadHosts.Add(NeoForgeHost);
+            }
+        }
+
+        return await fetch(mirror!).ConfigureAwait(false);
     }
+
+    public static Task<string> GetStringAsync(string url, CancellationToken ct) =>
+        WithMirrorAsync(url, async u =>
+        {
+            using var resp = await Client.GetAsync(u, ct).ConfigureAwait(false);
+            resp.EnsureSuccessStatusCode();
+            return await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        }, ct);
+
+    public static Task<byte[]> GetBytesAsync(string url, CancellationToken ct) =>
+        WithMirrorAsync(url, async u =>
+        {
+            using var resp = await Client.GetAsync(u, ct).ConfigureAwait(false);
+            resp.EnsureSuccessStatusCode();
+            return await resp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+        }, ct);
 
     public static async Task<T?> GetJsonAsync<T>(string url, CancellationToken ct)
     {
