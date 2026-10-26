@@ -438,15 +438,30 @@ if (po["outputs"] is { } outNode)
 
                 if (entry is not null)
                 {
-                    // 落到 libraries 下一个稳定位置，供 processor 当输入用
+                    // 落到 libraries 下一个稳定位置，供 processor 当输入用。
+                    //
+                    // ★ 这里**必须无条件重解**，不能"文件已存在就跳过"。
+                    //   踩过的坑：解出来的名字只取 entry 的文件名（client.lzma），
+                    //   路径里不带"是哪个 installer 的补丁"，于是第一次装 NeoForge
+                    //   （47.1.106）解出来的 client.lzma 就一直留在盘上，后面装
+                    //   Forge 47.4.0 / 47.4.28 全都拿这份 NeoForge 补丁去 binarypatcher
+                    //   → 产出的 client.jar 是 47.1.x 那一代的形状（AbstractWidget
+                    //   实现了那个版本才有的 net.minecraftforge.client.extensions.
+                    //   IAbstractWidgetExtension），而 47.4.x 的 universal/其它 jar 里
+                    //   根本没有这个接口 → modlauncher 在**生成崩溃报告**的路上
+                    //   ClassNotFoundException，用户只看到「启动失败」，连 crash-report
+                    //   都写不出来。
+                    //   实测差异：Forge 47.4.0 的补丁是 41D9D3F43459（2700 KB），
+                    //   NeoForge 的是 BC040A2C7893（2692 KB）—— 完全不同的文件。
+                    //   重解一次只有 2.6 MB，代价可以忽略。
                     var outDir = Path.Combine(librariesRoot, "_processor_inputs");
                     Directory.CreateDirectory(outDir);
                     var outPath = Path.Combine(outDir, Path.GetFileName(entryName));
 
-                    if (!File.Exists(outPath))
+                    if (File.Exists(outPath)) File.Delete(outPath);
+                    using (var es = entry.Open())
+                    using (var fs = File.Create(outPath))
                     {
-                        using var es = entry.Open();
-                        using var fs = File.Create(outPath);
                         es.CopyTo(fs);
                     }
 

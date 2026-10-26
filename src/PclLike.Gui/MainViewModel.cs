@@ -908,14 +908,19 @@ public sealed class MainViewModel : ObservableObject
     {
         var inst = _selectedInstance ?? Store.EnsureDefault(versionId);
 
-        // 实例挂的版本要跟当前选的版本一致，否则等于用 A 的目录跑 B
-        if (inst.VersionId != versionId)
+        // 隔离实例挂的版本是它的"身份"（整包配套的那个加载器版本），不能因为
+        // 下载页里选了别的就改掉 —— 改了就等于下次用原版启动一个满是 Mod 的
+        // 目录，Forge 不加载、Mod 数据包全"缺失"、世界打不开。
+        // 共享实例才跟着当前选的版本走。
+        if (!inst.Isolated && inst.VersionId != versionId)
         {
             AppendLog(LogKind.Info, $"实例「{inst.Name}」的版本从 {inst.VersionId} 改为 {versionId}");
             inst.VersionId = versionId;
         }
 
-        inst.Loader = GuessLoader(versionId);
+        inst.Loader = GuessLoader(inst.Isolated && !string.IsNullOrWhiteSpace(inst.VersionId)
+            ? inst.VersionId
+            : versionId);
         inst.LastPlayedAt = DateTimeOffset.Now;
         Store.Save(inst);
 
@@ -1970,15 +1975,22 @@ public sealed class MainViewModel : ObservableObject
     {
         // 启动哪个版本？
         //
-        // 两个地方都能改"要玩什么"：版本列表里选中的版本、当前实例挂的版本。
-        // 规则只有一条 —— **最近一次明确操作说了算**：
-        //   · 选中实例 → 版本列表跟着实例走（见 SyncVersionToInstance）
-        //   · 在列表里挑别的版本 → 启动就用它，EnsureInstanceForLaunch 再把它
-        //     写回实例（所以不会出现"界面显示 A、实际启动 B"）
-        // 列表一个都没选（还没加载完）时退回到实例挂的版本。
-        var launchVersionId = SelectedVersion?.Id;
-        if (string.IsNullOrWhiteSpace(launchVersionId))
-            launchVersionId = SelectedInstance?.VersionId;
+        // ★ 一条硬规则：**隔离实例的版本由实例自己说了算**。
+        //
+        // 隔离实例 = 一个整包 / 一个加载器装出来的那套东西，它的 mods 和版本是
+        // 配套的。这里以前是"列表里选中谁就用谁"（当时的理由是"最近一次明确操作
+        // 说了算"），结果就是：在下载页选中 1.20.1，再启动那个 Forge 整包实例 ——
+        // 等于用**纯原版**去跑一个塞满 Mod 的目录。Forge 根本没加载，所有 Mod 的
+        // 数据包都没注册，世界一开就报：
+        //   Overworld settings missing
+        //   Missing data pack mod:xxx（每一个 mod 都"缺失"）
+        // 用户 2026-10-26 踩的就是这个。
+        //
+        // 共享实例（挂在启动器根目录的那套）才允许用列表里选的版本。
+        var inst = SelectedInstance;
+        var launchVersionId = inst is { Isolated: true } && !string.IsNullOrWhiteSpace(inst.VersionId)
+            ? inst.VersionId
+            : SelectedVersion?.Id ?? inst?.VersionId;
 
         if (string.IsNullOrWhiteSpace(launchVersionId)) return;
 
