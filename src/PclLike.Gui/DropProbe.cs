@@ -113,6 +113,34 @@ internal static class DropProbe
         Say("── D. 当前选中的实例 ──");
         Say($"    {vm.SelectedInstance?.Name ?? "（没选）"} → {vm.SelectedInstance?.VersionId}");
 
+        // ── E/F. 任务管理窗到底吃到了什么 ──
+        //
+        // 「导入没进度」这种问题只能在这条真实路径上看。Tasks **不碰安装代码**，
+        // 它只订阅 LogLines 然后靠认文本推进清单 —— 所以必须把
+        // 「日志里到底有什么」和「它认出了几步」并排打出来，
+        // 才能一眼分清是【日志压根没产生】还是【认的句式对不上】。
+        Say();
+        Say("── E. 任务管理（Tasks）吃到了什么 ──");
+        Say($"    标题   : {vm.Tasks.Title}");
+        Say($"    总进度 : {vm.Tasks.Overall:0.00} %");
+        Say($"    剩余   : {vm.Tasks.RemainingText}    速度: {vm.Tasks.SpeedText}");
+        Say($"    步数   : {vm.Tasks.Steps.Count}");
+        foreach (var s in vm.Tasks.Steps)
+        {
+            var mark = s.State switch
+            {
+                StepState.Done => "✓",
+                StepState.Running => "→",
+                StepState.Failed => "✗",
+                _ => "·",
+            };
+            Say($"      [{mark}] {s.Name,-26} {s.Percent,3}%");
+        }
+
+        Say();
+        Say($"── F. 日志行（共 {vm.LogLines.Count} 行，列最后 30 行）──");
+        foreach (var l in vm.LogLines.TakeLast(30)) Say($"    {l.Text}");
+
         return 0;
     }
 }

@@ -208,7 +208,14 @@ namespace PclLike.Gui
         {
             foreach (var s in Steps)
             {
-                if (s.State is StepState.Running or StepState.Waiting) s.State = StepState.Done;
+                if (s.State is StepState.Running or StepState.Waiting)
+                {
+                    s.State = StepState.Done;
+
+                    // 百分比也要跟着补满 —— 只把状态改成 ✓、数字还停在 0%，
+                    // 列表上就会显示成「✓ 解压整合包文件 0%」，看着像没做完。
+                    s.Percent = 100;
+                }
             }
 
             Overall = 100;
@@ -237,6 +244,48 @@ namespace PclLike.Gui
         {
             if (string.IsNullOrWhiteSpace(message)) return;
 
+            // ── 懒人包（整包）那条路 ────────────────────────────────────────
+            //
+            // 下面这些句式是照着 BundleImporter / MainViewModel 真实打出来的字
+            // **抄下来的**，不是猜的（原来这套句式只覆盖 CurseForge 那条路，
+            // 所以拖整包时清单永远是空的）：
+            //   「拖入整包：modpack.zip —— 先数清楚包里有什么」
+            //   「整包内容：2 个文件 / 0 MB，带 Mod」
+            //   「解压到新实例「modpack」（约 0 MB，要等几分钟）」
+            //   「已解开 189 / 约 1234 个文件（12 MB）」
+            //   「已解开 1234 个文件（88 MB）」
+            //   「已新建实例「X」→ 1.21.4（独立）」
+            if (message.Contains("拖入整包", StringComparison.Ordinal))
+            {
+                Step("数清包里有什么");
+                return;
+            }
+
+            if (message.Contains("整包内容", StringComparison.Ordinal))
+            {
+                Step("数清包里有什么");
+
+                // 「整包内容：1234 个文件 / 88 MB」——先知道一共多少个，
+                // 顶上的「剩余文件」才有东西可显示（没必要等到解压才知道）。
+                var n = CountRe.Match(message);
+                if (n.Success) RemainingText = n.Groups["n"].Value;
+                return;
+            }
+
+            if (message.Contains("解压到新实例", StringComparison.Ordinal) ||
+                message.Contains("正在解压", StringComparison.Ordinal))
+            {
+                Step("解压整合包文件");
+                return;
+            }
+
+            if (message.Contains("已新建实例", StringComparison.Ordinal))
+            {
+                Done("新建实例");
+                Done("数清包里有什么");
+                return;
+            }
+
             var m = ProgressRe.Match(message);
             if (m.Success)
             {
@@ -250,6 +299,14 @@ namespace PclLike.Gui
                     SpeedText = EstimateSpeed(done);
                 }
 
+                return;
+            }
+
+            // 「已解开 N 个文件（M MB）」——没有斜杠的那种收尾行，算这一步做完了。
+            // 必须在上面 ProgressRe 分支**之后**：带「/ 约 N」的那版要走百分比那条路。
+            if (message.Contains("已解开", StringComparison.Ordinal))
+            {
+                Done("解压整合包文件");
                 return;
             }
 
@@ -294,7 +351,13 @@ namespace PclLike.Gui
         // ── 内部 ──────────────────────────────────────────────────────────
 
         private static readonly Regex ProgressRe = new(
-            @"(?<done>\d+)\s*/\s*(?<total>\d+)", RegexOptions.Compiled);
+            // 「189 / 约 1234 个文件」——那个「约」是 BundleImporter 自己打的，
+            // 不认它的话整包解压的进度就一条都认不出来。
+            @"(?<done>\d+)\s*/\s*(?:约\s*)?(?<total>\d+)", RegexOptions.Compiled);
+
+        /// <summary>「整包内容：1234 个文件」→ 1234。</summary>
+        private static readonly Regex CountRe = new(
+            @"(?<n>\d+)\s*个文件", RegexOptions.Compiled);
 
         private long _lastDone = -1;
         private DateTime _lastAt = DateTime.MinValue;
@@ -325,6 +388,11 @@ namespace PclLike.Gui
 
         private static string StepNameFor(string message)
         {
+            // 最新的两类先认（整包那条路），再是 CurseForge 那条路。
+            if (message.Contains("已解开", StringComparison.Ordinal) ||
+                message.Contains("解压", StringComparison.Ordinal) ||
+                message.Contains("整包", StringComparison.Ordinal)) return "解压整合包文件";
+
             // 句式就是 CursePack.cs 里本来在打的那几种，顺序不能乱：
             // 「已下 189/264（失败 4）」必须先认，否则会掉到最后的兜底名
             if (message.Contains("已下", StringComparison.Ordinal)) return "下载额外文件";

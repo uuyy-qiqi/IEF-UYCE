@@ -945,7 +945,14 @@ public sealed class MainViewModel : ObservableObject
     private ContentViewModel? _content;
 
     /// <summary>下载页「社区资源」那一屏。同样是延迟创建（要读实例列表）。</summary>
-    public ContentViewModel Content => _content ??= new ContentViewModel(CurrentInstance, AppendLog, GameRoot);
+    public ContentViewModel Content => _content ??= new ContentViewModel(
+        CurrentInstance,
+        AppendLog,
+        GameRoot,
+        // 第四个出口：安装进度也送一份给「任务管理」窗。
+        // 只喂顶栏（StatusMessage）的话，那个窗永远是 0.00%、一个步骤都没有
+        // —— 用户看到的就是「为什么导入没进度」。
+        Tasks.OnLog);
 
     private InstallerViewModel? _installer;
 
@@ -1363,6 +1370,15 @@ public sealed class MainViewModel : ObservableObject
         }
 
         RefreshInstances();
+        // 收尾：装了东西（清单里真有步骤）就给个结论。
+        // 不写这一段的话，任务管理窗会永远停在「进行中 0.00 %」——
+        // 因为它只会在下一次 Begin 时才被重置。
+        if (Tasks.Steps.Count > 0)
+        {
+            if (lines.Any(l => l.StartsWith("✗", StringComparison.Ordinal))) Tasks.Fail();
+            else Tasks.Finish();
+        }
+
         return string.Join("\n\n", lines);
     }
 
@@ -2195,7 +2211,20 @@ public sealed class MainViewModel : ObservableObject
             _pendingLines.Clear();
         }
 
-        foreach (var one in batch) LogLines.Add(one);
+        foreach (var one in batch)
+        {
+            LogLines.Add(one);
+
+            // 顺手喂给「任务管理」窗（它靠认日志句式推进清单）。
+            //
+            // 为什么挂在这里而不是挂在窗口上：**所有**安装路径最后都会打日志，
+            // 而每个安装器各自通知一次是要靠纪律的 —— 今天就是整包那条路漏了，
+            // 表现成「导入没进度」。挂在这一处，以后新的安装器只要打日志就自动有进度。
+            //
+            // 必须在这（UI 线程）调：OnLog 会动 Steps 这个 ObservableCollection，
+            // 后台线程上动它、界面上又绑着，会直接抛跨线程异常把安装带走。
+            Tasks.OnLog(one.Text);
+        }
 
         // 防止长跑一晚上把内存吃满
         while (LogLines.Count > 5000) LogLines.RemoveAt(0);

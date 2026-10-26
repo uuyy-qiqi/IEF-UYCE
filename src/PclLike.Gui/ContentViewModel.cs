@@ -46,6 +46,13 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
 {
     private readonly Func<GameInstance> _instance;
     private readonly Action<LogKind, string> _log;
+
+    /// <summary>
+    /// 安装进度文本的第二个出口（顶栏之外）。见 <see cref="InstallLocalPackAsync"/> 里的说明。
+    /// 可为 null —— 没人关心进度时不用管它。
+    /// </summary>
+    private readonly Action<string>? _onProgress;
+
     private readonly ModDownloader _downloader = new();
     private readonly FavoritesStore _favorites;
     private readonly string _tempDir;
@@ -53,10 +60,15 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
     private readonly CancellationTokenSource _cts = new();
 
     /// <summary>收藏夹存在启动器根目录下 —— 它是全启动器一份，不跟着实例走。</summary>
-    public ContentViewModel(Func<GameInstance> instance, Action<LogKind, string> log, string launcherRoot)
+    public ContentViewModel(
+        Func<GameInstance> instance,
+        Action<LogKind, string> log,
+        string launcherRoot,
+        Action<string>? onProgress = null)
     {
         _instance = instance;
         _log = log;
+        _onProgress = onProgress;
         _favorites = new FavoritesStore(launcherRoot);
         _launcherRoot = launcherRoot;
         _tempDir = Path.Combine(Path.GetTempPath(), "pcllike-content");
@@ -722,11 +734,27 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
                 : $"正在装整合包「{plan.Name}」（{plan.McVersion}"
                   + (plan.LoaderName is null ? "" : $" / {plan.LoaderName} {plan.LoaderVersion}") + "）…";
 
+            // 进度文本的出口有两个：
+            //  · StatusMessage —— 顶栏那一行（原来只有它）
+            //  · _onProgress    —— 「任务管理」窗
+            //
+            // 为什么要第二个：任务管理窗**不碰安装代码**，它订阅的是日志流，靠认
+            // 句式推进清单。可进度回调根本不打日志（顶栏一行就够看了，每 tick 都
+            // 写日志会把日志冲爆），于是拖整包时那个窗永远是 0.00%、一个步骤都没有
+            // —— 用户的原话是「为什么导入没进度」。所以把同一份文本也送一份过去，
+            // 让 TaskProgressViewModel.OnLog 用**同一套句式**（「已解开 189 / 约 1234 个文件」
+            // 「拖入整包」「解压到新实例」）认出步骤和百分比。
+            var progress = new Progress<string>(s =>
+            {
+                StatusMessage = s;
+                _onProgress?.Invoke(s);
+            });
+
             var r = await ModPackInstaller.InstallAsync(
                 mrpackPath,
                 target,
                 FetchPackFileAsync,
-                new Progress<string>(s => StatusMessage = s),
+                progress,
                 _cts.Token);
 
             if (!r.Ok)
