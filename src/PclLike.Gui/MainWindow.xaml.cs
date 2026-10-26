@@ -698,10 +698,43 @@ public partial class MainWindow : Window
 
     private async void Install_Click(object sender, RoutedEventArgs e)
     {
-        if (_vm.SelectedVersion is null) return;
+        // 五个版本列表共用一个 SelectedVersion，所以先兜一层：它万一还是空的，
+        // 就从当前真正被选中的那个列表里捡回来。绝不静默 return —— 点了「安装」
+        // 什么反应都没有，用户看到的就是「这个版本下不了」。
+        var version = _vm.SelectedVersion ?? FirstSelectedVersion();
+        if (version is null)
+        {
+            _vm.StatusText = "先在列表里点一个版本，再按「安装」";
+            return;
+        }
 
+        _vm.SelectedVersion = version;
         _vm.Persist();
         await _vm.InstallAsync();
+    }
+
+    /// <summary>
+    /// 在窗口里找出真正被选中的那个版本。
+    /// 五个版本列表（已安装 / 正式版 / 预览版 / 远古 / 愚人节）的 SelectedItem 都绑在
+    /// 同一个属性上，互相会把对方的选择清掉，所以有时候得回到列表本身去看谁还亮着。
+    /// </summary>
+    private VersionItem? FirstSelectedVersion()
+    {
+        foreach (var lb in DescendantsOf(this).OfType<ListBox>())
+            if (lb.SelectedItem is VersionItem v) return v;
+
+        return null;
+    }
+
+    private static IEnumerable<DependencyObject> DescendantsOf(DependencyObject root)
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            yield return child;
+
+            foreach (var d in DescendantsOf(child)) yield return d;
+        }
     }
 
     private void OpenFolder_Click(object sender, RoutedEventArgs e) => _vm.OpenGameFolder();

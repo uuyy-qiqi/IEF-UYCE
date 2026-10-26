@@ -207,10 +207,18 @@ public sealed class MainViewModel : ObservableObject
         get => _selectedVersion;
         set
         {
+            // 五个版本列表（已安装 / 正式版 / 预览版 / 远古 / 愚人节）都把 SelectedItem
+            // 绑在这同一个属性上。在 A 列表里选过之后再去 B 列表点一下，WPF 会先把 A 的
+            // 选择清空，这个清空也写进同一个属性 —— 一旦收下，就等于「当前没选版本」，
+            // 点「安装」会静默什么都不做（MainWindow.Install_Click 里那句
+            // `if (SelectedVersion is null) return;`），用户看到的就是
+            // 「下面的正式版下不了」。所以 null 一律忽略：换列表时保留上一次的选择。
+            if (value is null) return;
+
             if (Set(ref _selectedVersion, value))
             {
                 // 选中即记忆，下次开启动器直接停在这个版本
-                Config.LastVersion = value?.Id;
+                Config.LastVersion = value.Id;
                 Persist();
                 OnPropertyChanged(nameof(CanLaunch));
                 OnPropertyChanged(nameof(SelectedVersionLabel));
