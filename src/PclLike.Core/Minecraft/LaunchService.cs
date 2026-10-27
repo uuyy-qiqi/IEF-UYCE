@@ -255,6 +255,11 @@ public sealed class LaunchService : IDisposable
             Username = options.Username,
             Uuid = options.Uuid,
             AccessToken = options.AccessToken,
+            // 这个字段默认 legacy。正版账号带 legacy 进游戏，皮肤/所有权那条链路
+            // 会按离线档处理，所以在线账号一律 msa。
+            UserType = string.IsNullOrWhiteSpace(options.AccessToken) || options.AccessToken == "0"
+                ? "legacy"
+                : "msa",
             MaxMemoryMb = maxMem,
             MinMemoryMb = options.MinMemoryMb,
             ServerAddress = options.ServerAddress,

@@ -391,31 +391,91 @@ public sealed class ForgeProvider : ForgeLikeProvider
 
     public override async Task<IReadOnlyList<LoaderVersion>> ListVersionsAsync(string mcVersion, CancellationToken ct = default)
     {
-        Promotions? promos;
+        // promotions_slim.json 只给 recommended / latest 两个标记，
+        // 一个 MC 版本最多 2 条（多数只有 1 条）。
+        // 以前只读它，界面上就成了「这个 MC 版本只有 1 个 Forge」——
+        // 实际 1.20.1 有几十个。所以这里改成：
+        //   1) promotions 拿「哪个是推荐版 / 最新版」这两个标记
+        //   2) maven-metadata.xml 拿全部版本号
+        // 两者分工，缺一个都能出结果。
+        var flagged = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        Exception? promosError = null;
         try
         {
-            promos = await LoaderHttp.GetJsonAsync<Promotions>(_promotionsUrl, ct).ConfigureAwait(false);
+            var promos = await LoaderHttp.GetJsonAsync<Promotions>(_promotionsUrl, ct).ConfigureAwait(false);
+            var table = promos?.Promos ?? [];
+            // 只认 recommended。Forge 的 -latest 只是"最新一次构建"，不代表稳定：
+            // 1.20.1 上根本不存在 -recommended，47.4.28 只是 latest ——
+            // 把 latest 当成"非稳定"，就会给最新版贴一个它不该有的「测试版」标签。
+            // 拿不准就标成"未知"，界面什么都不显示。
+            if (table.TryGetValue($"{mcVersion}-recommended", out var stableFlag) &&
+                !string.IsNullOrWhiteSpace(stableFlag))
+            {
+                flagged[stableFlag] = true;
+            }
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException(LoaderHttp.Explain(ex, "获取 Forge 版本列表"), ex);
+            promosError = ex;
         }
 
-        var result = new List<LoaderVersion>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var table = promos?.Promos ?? [];
-
-        // recommended 优先，其次 latest
-        foreach (var (suffix, stable) in new[] { ("-recommended", true), ("-latest", false) })
+        var all = new List<string>();
+        Exception? mavenError = null;
+        try
         {
-            var key = $"{mcVersion}{suffix}";
-            if (!table.TryGetValue(key, out var v) || string.IsNullOrWhiteSpace(v)) continue;
-            if (!seen.Add(v)) continue;
-
-            result.Add(new LoaderVersion(LoaderKind.Forge, mcVersion, v, stable, InstallerUrlFor($"{mcVersion}-{v}"), "https://files.minecraftforge.net/"));
+            var xml = await LoaderHttp
+                .GetStringAsync($"{MavenBase}/{InstallerGroupPath}/maven-metadata.xml", ct)
+                .ConfigureAwait(false);
+            all.AddRange(System.Text.RegularExpressions.Regex
+                .Matches(xml, @"<version>\s*([^<\s]+)\s*</version>")
+                .Select(m => m.Groups[1].Value));
+        }
+        catch (Exception ex)
+        {
+            mavenError = ex;
         }
 
-        // promotions 里没有该 MC 版本 = 这个版本没有 Forge
-        return result;
+        var prefix = mcVersion + "-";
+        var loaderVersions = all
+            .Where(v => v.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            .Select(v => v[prefix.Length..])
+            .Where(v => v.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // 兜底：maven 挂了但 promotions 拿到了，就至少把这两个给出去
+        if (loaderVersions.Count == 0 && flagged.Count > 0)
+        {
+            loaderVersions = [.. flagged.Keys.OrderByDescending(v => v, Comparer<string>.Create(CompareVersions))];
+        }
+
+        if (loaderVersions.Count == 0)
+        {
+            if (mavenError is not null || promosError is not null)
+            {
+                var ex = mavenError ?? promosError!;
+                throw new InvalidOperationException(LoaderHttp.Explain(ex, "获取 Forge 版本列表"), ex);
+            }
+
+            // 两边都通但都没这个 MC 版本 = 这个 MC 版本确实没有 Forge
+            return [];
+        }
+
+        return loaderVersions
+            .OrderByDescending(v => v, Comparer<string>.Create(CompareVersions))
+            .Select(v => new LoaderVersion(
+                LoaderKind.Forge,
+                mcVersion,
+                v,
+                IsStable: flagged.TryGetValue(v, out var s) && s,
+                InstallerUrlFor($"{mcVersion}-{v}"),
+                "https://files.minecraftforge.net/")
+            {
+                // promotions 只告诉我们 recommended / latest 这两个版本的性质。
+                // 剩下几十个版本我们并不知道是稳定还是测试，别替人家下结论 ——
+                // 标记成"未知"，界面就不显示「测试版」标签，而不是把 47.3.0 误标。
+                StabilityKnown = flagged.ContainsKey(v),
+            })
+            .ToList();
     }
 }

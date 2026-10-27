@@ -61,10 +61,14 @@ if (list.Count == 0)
     return 1;
 }
 
-foreach (var v in list.Take(3))
+var listOnly = args.Contains("--list-only");
+foreach (var v in list.Take(listOnly ? 8 : 3))
 {
-    Console.WriteLine($"    · {v.DisplayName}  → {v.ResultVersionId}  稳定={v.IsStable}");
+    Console.WriteLine($"    · {v.DisplayName}  → {v.ResultVersionId}  稳定={v.IsStable}  稳定性已知={v.StabilityKnown}");
 }
+Console.WriteLine($"    其中被标记为稳定版：{list.Count(v => v.StabilityKnown && v.IsStable)} 个；" +
+                  $"稳定性未知：{list.Count(v => !v.StabilityKnown)} 个");
+if (listOnly) return 0;
 
 var target = want is null
     ? list.FirstOrDefault(v => v.IsStable) ?? list[0]

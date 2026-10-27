@@ -18,6 +18,18 @@ public sealed class LaunchConfig
     public string Uuid { get; init; } = "00000000000000000000000000000000";
     public string AccessToken { get; init; } = "0";
     public string UserType { get; init; } = "legacy";
+
+    /// <summary>
+    /// 游戏参数里的 `--clientId`。官方版本 JSON 写作 `${clientid}`，
+    /// 正版（MSA）必须是启动器自己的应用 ID。
+    /// </summary>
+    public string ClientId { get; init; } = PclLike.Core.Login.MicrosoftAuth.DefaultClientId;
+
+    /// <summary>
+    /// 账号的 XUID，官方版本 JSON 写作 `${auth_xuid}`。
+    /// 拿不到真实的就填 `0` —— 不能填空串，见 TokenTable 里的说明。
+    /// </summary>
+    public string Xuid { get; init; } = "0";
     public string LauncherName { get; init; } = "PclLike";
     public string LauncherVersion { get; init; } = "0.1.0";
     public string VersionType { get; init; } = "release";
@@ -145,6 +157,13 @@ public static class ArgumentBuilder
         ["${auth_access_token}"] = cfg.AccessToken,
         ["${auth_session}"] = cfg.AccessToken,
         ["${user_type}"] = cfg.UserType,
+        // 官方 1.20.1 的版本 JSON 里有 `--clientId ${clientid} --xuid ${auth_xuid}`。
+        // 以前这两个不在表里，Substitute 对未知占位符是"保留原样"，
+        // 于是字面量 `${clientid}` 直接进了命令行（启动日志里就能看到）。
+        // 值也不能是空串：空串会被 ExpandArgumentList 丢掉（`if (v.Length > 0)`），
+        // 结果 `--clientId` 后面紧跟着 `--xuid`，参数整体错位。
+        ["${clientid}"] = cfg.ClientId,
+        ["${auth_xuid}"] = cfg.Xuid,
         ["${version_name}"] = cfg.VersionId,
         ["${version_type}"] = cfg.VersionType,
         ["${game_directory}"] = cfg.GameDirectory,
