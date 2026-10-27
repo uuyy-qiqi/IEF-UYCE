@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -8,6 +8,11 @@
     <UseWPF>true</UseWPF>
     <RootNamespace>PclLike.Gui</RootNamespace>
     <AssemblyName>PclLike</AssemblyName>
+    <!-- 对外显示用的名字：任务管理器、文件属性、「打开方式」里看到的是这个，
+         不是程序集名。程序集名保持 PclLike，快捷方式和脚本都指着它。 -->
+    <Product>IEF-UYCE版</Product>
+    <AssemblyTitle>IEF-UYCE版</AssemblyTitle>
+    <Description>IEF-UYCE版 —— 自写的 Minecraft 启动器</Description>
     <StartupObject>PclLike.Gui.Program</StartupObject>
     <Version>0.1.0</Version>
     <Platforms>AnyCPU;x64</Platforms>
@@ -36,6 +41,7 @@
          注意它和 default_skin.png 是两回事：后者是给 SkinService 当兜底的
          标准 64×64 皮肤图，前者只负责"没皮肤可画时这张脸长什么样"。 -->
     <Resource Include="Assets\avatar_fallback.png" />
+    <Resource Include="Assets\icons\*.jpg" />
 
     <!-- 生成脚本和预览图不进程序集，免得白塞一堆没用的图 -->
     <None Remove="Assets\_preview_*.png" />

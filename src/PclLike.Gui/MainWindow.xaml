@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:PclLike.Gui"
         xmlns:skins="clr-namespace:PclLike.Gui.Skins"
-        Title="PclLike 启动器" Height="720" Width="1120"
+        Title="IEF-UYCE版" Height="720" Width="1120"
         Icon="Assets/pclike.png"
         MinHeight="560" MinWidth="900"
         Background="{StaticResource BgBrush}"
@@ -39,16 +39,28 @@
     <DataTemplate x:Key="VersionRowTemplate" DataType="{x:Type local:VersionItem}">
       <Grid Height="38">
         <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto"/>
           <ColumnDefinition Width="*" MinWidth="120"/>
           <ColumnDefinition Width="80"/>
         </Grid.ColumnDefinitions>
-        <StackPanel Grid.Column="0" VerticalAlignment="Center">
+
+        <!-- 行首图标：一张小圆角头像，按版本类型/加载器换图
+             （正式版 / 预览版 / 远古版 / Fabric / Forge / NeoForge / Quilt / OptiFine）。
+             24×24 圆角裁切，跟 PCL 那种「一眼认出是什么版本」的用法一致。 -->
+        <Border Grid.Column="0" Width="24" Height="24" CornerRadius="6"
+                Margin="0,0,9,0" VerticalAlignment="Center"
+                Background="{StaticResource SelectedBrush}" ClipToBounds="True">
+          <Image Source="{Binding IconSource, Mode=OneWay}" Stretch="UniformToFill"
+                 RenderOptions.BitmapScalingMode="HighQuality"/>
+        </Border>
+
+        <StackPanel Grid.Column="1" VerticalAlignment="Center">
           <TextBlock Text="{Binding Display}" FontSize="13.5" FontWeight="SemiBold"
                      TextTrimming="CharacterEllipsis"/>
           <TextBlock Text="{Binding ReleaseDate}" FontSize="11"
                      Foreground="{StaticResource TextMutedBrush}"/>
         </StackPanel>
-        <Border Grid.Column="1" CornerRadius="3" Padding="8,1,8,3"
+        <Border Grid.Column="2" CornerRadius="3" Padding="8,1,8,3"
                 Background="{StaticResource SelectedBrush}"
                 VerticalAlignment="Center" HorizontalAlignment="Left">
           <!-- 不设 LineHeight：中文字体（微软雅黑）的行高比字号大不少，
@@ -81,7 +93,9 @@
         <!-- 左：Logo -->
         <StackPanel Grid.Column="0" Orientation="Horizontal"
                     VerticalAlignment="Center" Margin="18,0,0,0">
-          <TextBlock Text="PCL" FontSize="19" FontWeight="Bold" Foreground="White"
+          <!-- 左上角品牌字。原来是 PCL + CE 徽章；改名后是 IEF-UYCE + 「版」徽章。
+               字号从 19 降到 17：IEF-UYCE 比 PCL 长，19 号会把中间那排页签挤偏。 -->
+          <TextBlock Text="IEF-UY" FontSize="19" FontWeight="Bold" Foreground="White"
                      VerticalAlignment="Center"/>
           <Border Background="#40FFFFFF" CornerRadius="3" Padding="5,2"
                   Margin="7,0,0,0" VerticalAlignment="Center">
@@ -361,9 +375,13 @@
                     <ColumnDefinition Width="*"/>
                   </Grid.ColumnDefinitions>
 
-                  <local:BlockGlyph Grid.Column="0" Width="42" Height="42"
-                                    TopBrush="#7CB342" LeftBrush="#5A8F2E" RightBrush="#4A7824"
-                                    Margin="0,0,14,0" VerticalAlignment="Center"/>
+                  <Border Grid.Column="0" Width="42" Height="42" CornerRadius="9"
+                          Margin="0,0,14,0" VerticalAlignment="Center"
+                          Background="{StaticResource SelectedBrush}" ClipToBounds="True">
+                    <Image Source="{Binding CurrentInstanceIcon, Mode=OneWay}"
+                           Stretch="UniformToFill"
+                           RenderOptions.BitmapScalingMode="HighQuality"/>
+                  </Border>
 
                   <StackPanel Grid.Column="1" VerticalAlignment="Center">
                     <TextBlock Text="{Binding InstanceLabel}" FontSize="15.5"
@@ -444,9 +462,13 @@
                       <ColumnDefinition Width="Auto"/>
                       <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
-                    <local:BlockGlyph Grid.Column="0" Width="30" Height="30"
-                                      TopBrush="#7CB342" LeftBrush="#5A8F2E" RightBrush="#4A7824"
-                                      Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <Border Grid.Column="0" Width="30" Height="30" CornerRadius="7"
+                                      Margin="0,0,12,0" VerticalAlignment="Center"
+                                      Background="{StaticResource SelectedBrush}" ClipToBounds="True">
+                      <Image Source="pack://application:,,,/Assets/icons/ver_release.jpg"
+                             Stretch="UniformToFill"
+                             RenderOptions.BitmapScalingMode="HighQuality"/>
+                    </Border>
                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                       <TextBlock Text="{Binding LatestReleaseLabel}" FontSize="13.5"
                                  FontWeight="SemiBold" Foreground="{StaticResource TextBrush}"/>
@@ -462,9 +484,13 @@
                       <ColumnDefinition Width="Auto"/>
                       <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
-                    <local:BlockGlyph Grid.Column="0" Width="30" Height="30"
-                                      TopBrush="#D9A05B" LeftBrush="#B4803C" RightBrush="#96682F"
-                                      Margin="0,0,12,0" VerticalAlignment="Center"/>
+                    <Border Grid.Column="0" Width="30" Height="30" CornerRadius="7"
+                                      Margin="0,0,12,0" VerticalAlignment="Center"
+                                      Background="{StaticResource SelectedBrush}" ClipToBounds="True">
+                      <Image Source="pack://application:,,,/Assets/icons/ver_snapshot.jpg"
+                             Stretch="UniformToFill"
+                             RenderOptions.BitmapScalingMode="HighQuality"/>
+                    </Border>
                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                       <TextBlock Text="{Binding LatestSnapshotLabel}" FontSize="13.5"
                                  FontWeight="SemiBold" Foreground="{StaticResource TextBrush}"/>
@@ -1814,7 +1840,7 @@
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0" Text="启动器" FontSize="13"
                                Foreground="{StaticResource TextSoftBrush}" VerticalAlignment="Center"/>
-                    <TextBlock Grid.Column="1" Text="PclLike —— 自写的 Minecraft 启动器" FontSize="12.5"
+                    <TextBlock Grid.Column="1" Text="IEF-UYCE版 —— 自写的 Minecraft 启动器" FontSize="12.5"
                                Foreground="{StaticResource TextBrush}"/>
                   </Grid>
                   <Grid Margin="0,10,0,0">

@@ -55,6 +55,35 @@ public static class Program
         if (loginIdx >= 0)
             return LoginProbe.Run(args.Skip(loginIdx).ToArray());
 
+        // 选文件夹弹窗探针：PclLike.exe --pick-folder [起始目录]
+        // 这个弹窗以前只有真点「添加已有文件夹」才出现，一条路验证不到它能不能
+        // 加载（XAML 报错编译期看不见）。--xamlcheck 会卡住，所以单独走一条。
+        var pickIdx = Array.FindIndex(args, a => a.Equals("--pick-folder", StringComparison.OrdinalIgnoreCase));
+        if (pickIdx >= 0)
+        {
+            var app1 = new Application();
+            _ = app1;   // 不 Run()，只借资源系统
+            var start = pickIdx + 1 < args.Length ? args[pickIdx + 1] : null;
+
+            // 不调 Pick()：那是模态的，探针没人点就永远卡着。
+            // 改成 Show() 出来、跑完 Loaded 与 Load()，1.5 秒后自己关 ——
+            // 这样既验证了 XAML 能加载，也验证了真读一次目录不炸。
+            var dlg = new FolderPickerDialog(start);
+            var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                // 不要在这里设 Console.OutputEncoding：stdout 被重定向到文件时
+                // SetConsoleOutputEncoding 会抛 IOException（句柄无效），
+                // 直接从 UI 线程把进程带走。
+                Console.WriteLine($"ok  FolderPickerDialog 加载成功，当前目录={dlg.CurrentDirectory}");
+                dlg.Close();
+            };
+            timer.Start();
+            app1.Run(dlg);
+            return 0;
+        }
+
         // 拖放探针：PclLike.exe --drop <文件> [文件...] [--install] [--instance 名字]
         // 拖放这件事没法用工具模拟操作系统级的拖拽（那要真的按下鼠标拖过桌面），
         // 所以把"收到一串路径之后干什么"整段抽成了可调用的方法，这里直接调它。

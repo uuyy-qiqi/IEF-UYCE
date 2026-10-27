@@ -5,5 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
-
+  <ItemGroup>
+    <!-- rar / 7z / tar.gz 解包：用户拖进来的整合包不一定是 zip -->
+    <PackageReference Include="SharpCompress" Version="0.38.0" />
+  </ItemGroup>
 </Project>

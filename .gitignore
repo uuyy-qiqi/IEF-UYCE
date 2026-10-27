@@ -1,4 +1,4 @@
-# ── 构建产物 ──
+﻿# ── 构建产物 ──
 bin/
 obj/
 *.user
@@ -23,3 +23,8 @@ dist2/
 probe-curse/bin/
 probe-curse/obj/
 dist3/
+
+# ── 各发布目录（dist5 是日常跑的那个，dist-portable 是给别人发的自包含包）──
+dist5/
+dist-portable/
+dist-*/

@@ -86,6 +86,19 @@ public sealed class InstanceRow
     public Brush Left { get; }
     public Brush Right { get; }
 
+    /// <summary>
+    /// 行首头像：跟下载页版本列表用的是同一套图（Assets\icons\ver_*.jpg）。
+    /// 原版用「正式版」那张，各加载器各有自己的脸。
+    /// </summary>
+    public string IconSource => Loader switch
+    {
+        "fabric" => "pack://application:,,,/Assets/icons/ver_fabric.jpg",
+        "quilt" => "pack://application:,,,/Assets/icons/ver_quilt.jpg",
+        "forge" => "pack://application:,,,/Assets/icons/ver_forge.jpg",
+        "neoforge" => "pack://application:,,,/Assets/icons/ver_neoforge.jpg",
+        _ => "pack://application:,,,/Assets/icons/ver_release.jpg",
+    };
+
     /// <summary>搜索用：小写拼起来的一整串。</summary>
     internal string Blob { get; }
 

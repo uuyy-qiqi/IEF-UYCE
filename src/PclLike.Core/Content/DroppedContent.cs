@@ -75,8 +75,34 @@ public static class DroppedContentClassifier
             if (ext is ".jar" or ".litemod")
                 return new DroppedContent(DroppedKind.Mod, path, name, "Mod（.jar）");
 
+            // .rar / .7z / .tar.gz —— 国内分享的包一大半是这个格式。
+            // 先解出来重新打成 zip，后面所有逻辑就只面对 zip 一种容器。
+            if (ArchiveNormalizer.NeedsNormalize(path))
+            {
+                ArchiveNormalizer.CleanupOld();
+
+                try
+                {
+                    var zipPath = ArchiveNormalizer.ToZip(path);
+                    var classified = Classify(zipPath);
+
+                    // 临时 zip 里认出来的东西照样算数，但对用户说的是原名
+                    return classified with
+                    {
+                        Path = zipPath,
+                        FileName = name,
+                        Describe = classified.Describe + $"（从 {ext} 解出）",
+                    };
+                }
+                catch (Exception ex)
+                {
+                    return Unknown(path, name,
+                        $"这个 {ext} 解不开：{ex.Message}（加密包、残缺包，或者用了太新的压缩算法）");
+                }
+            }
+
             if (ext != ".zip")
-                return Unknown(path, name, $"不认识「{ext}」这种文件（支持 .mrpack / .zip / .jar）");
+                return Unknown(path, name, $"不认识「{ext}」这种文件（支持 .zip / .rar / .7z / .mrpack / .jar）");
 
             // 到这里都是 zip，打开看结构
             using var zip = ZipFile.OpenRead(path);
@@ -107,6 +133,24 @@ public static class DroppedContentClassifier
 
             // 名字叫 manifest.json 但不是 CurseForge 的清单：老式手工包也爱用这个
             // 文件名，交给下面按目录结构继续判断，别硬塞进整合包这条路。
+
+            // 其它启动器导出的整合包：它们的清单文件各有一套，但共同点是
+            // **包里的东西是全的**，不需要联网照单下载 —— 都按"整包"处理。
+            if (byName.Contains("mmc-pack.json") || byName.Contains("instance.cfg"))
+                return new DroppedContent(DroppedKind.PackBundle, path, name,
+                    "MultiMC / Prism 导出的整合包（有 mmc-pack.json / instance.cfg）");
+
+            if (byName.Contains("mcbbs.packmeta"))
+                return new DroppedContent(DroppedKind.PackBundle, path, name,
+                    "HMCL / MCBBS 格式整合包（有 mcbbs.packmeta）");
+
+            if (byName.Contains("PCL/Setup.ini") || byName.Contains("pcl/setup.ini"))
+                return new DroppedContent(DroppedKind.PackBundle, path, name,
+                    "PCL 导出的整合包（有 PCL/Setup.ini）");
+
+            if (byName.Contains("bin/modpack.jar"))
+                return new DroppedContent(DroppedKind.PackBundle, path, name,
+                    "Technic 整合包（有 bin/modpack.jar）");
 
             // 解压即玩懒人包：包里有整个 .minecraft，或者有 versions/<id>/<id>.json
             // 这种"自带一份游戏"的结构。必须排在资源包/数据包/光影前面 ——
@@ -141,11 +185,17 @@ public static class DroppedContentClassifier
             if (roots.Contains("shaders"))
                 return new DroppedContent(DroppedKind.ShaderPack, path, name, "光影包（有 shaders/）");
 
-            // 一堆 jar 的 zip：老式整合包（CurseForge 的手工包就是这样）
+            // 一堆 jar 的 zip：老式整合包（CurseForge 的手工包就是这样）。
+            // 以前这里报"认不出它要哪个版本和加载器，不敢乱装"，但用户拖这玩意儿
+            // 过来就是想要它装进去 —— 当成懒人包处理：整包铺到实例目录，
+            // 版本和加载器让用户在安装页选（比一句"不敢装"有用得多）。
             if (roots.Contains("mods"))
-                return Unknown(path, name,
-                    "看起来是个整合包，但里面没有清单（modrinth.index.json），"
-                    + "认不出它要哪个版本和加载器，不敢乱装");
+                return new DroppedContent(DroppedKind.PackBundle, path, name,
+                    "手工整合包（有 mods/ 但没有清单，整包铺进实例）");
+
+            if (inner.Contains("mods"))
+                return new DroppedContent(DroppedKind.PackBundle, path, name,
+                    "手工整合包（mods/ 在里层目录，整包铺进实例）");
 
             if (roots.Contains("resourcepacks") || roots.Contains("saves"))
                 return Unknown(path, name, "这个 zip 里是一堆包/存档，不是单个可安装的东西，解压后再拖里面的文件");

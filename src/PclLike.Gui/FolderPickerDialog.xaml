@@ -1,0 +1,172 @@
+<Window x:Class="PclLike.Gui.FolderPickerDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="选择文件夹" Height="580" Width="780"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ResizeMode="NoResize" WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+
+  <!-- 照 PCL 的「选择文件夹」做的：面包屑上行 + 搜索 + 表格（名称/修改日/类型）+ 底部路径与按钮。
+       颜色全部写死，不依赖主题资源 —— 这一弹窗不该因为主题切换而变形。 -->
+  <Border CornerRadius="8" Background="#FFFFFF" BorderBrush="#D8DCE1" BorderThickness="1">
+    <Border.Effect>
+      <DropShadowEffect BlurRadius="18" ShadowDepth="2" Opacity="0.18"/>
+    </Border.Effect>
+
+    <Grid>
+      <Grid.RowDefinitions>
+        <RowDefinition Height="46"/>   <!-- 标题 -->
+        <RowDefinition Height="44"/>   <!-- 面包屑 + 搜索 -->
+        <RowDefinition Height="*"/>    <!-- 文件夹表格 -->
+        <RowDefinition Height="58"/>   <!-- 底部 -->
+      </Grid.RowDefinitions>
+
+      <!-- ═══ 标题栏 ═══ -->
+      <Border Grid.Row="0" Background="#F4F6F9" CornerRadius="8,8,0,0"
+              BorderBrush="#E4E7EB" BorderThickness="0,0,0,1">
+        <Grid>
+          <TextBlock Text="选择文件夹" FontSize="13.5" FontWeight="SemiBold"
+                     Foreground="#2B2F36" VerticalAlignment="Center" Margin="16,0,0,0"/>
+          <Button Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0"
+                  Width="30" Height="28" FontSize="12" Foreground="#6B7280"
+                  Background="Transparent" BorderThickness="0" Cursor="Hand"
+                  Click="Cancel_Click"/>
+        </Grid>
+      </Border>
+
+      <!-- ═══ 面包屑 + 搜索 ═══ -->
+      <Grid Grid.Row="1" Margin="16,0,16,0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+
+        <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+          <Button x:Name="UpButton" Content="↑" Width="28" Height="26" FontSize="12"
+                  Background="#EFF2F6" BorderBrush="#DDE1E7" BorderThickness="1"
+                  Cursor="Hand" Click="Up_Click" ToolTip="上一级"/>
+          <TextBlock x:Name="BreadcrumbText" VerticalAlignment="Center" Margin="10,0,0,0"
+                     FontSize="12.5" Foreground="#3B4148" TextTrimming="CharacterEllipsis"/>
+        </StackPanel>
+
+        <Border Grid.Column="1" Margin="14,0,14,0" Height="26" CornerRadius="13"
+                Background="#F2F4F7" BorderBrush="#E1E5EA" BorderThickness="1">
+          <Grid>
+            <TextBlock Text="🔍" VerticalAlignment="Center" Margin="10,0,0,0" FontSize="11" Foreground="#9AA1AA"/>
+            <TextBox x:Name="SearchBox" Margin="28,0,10,0" BorderThickness="0" Background="Transparent"
+                     VerticalContentAlignment="Center" FontSize="12"
+                     TextChanged="Search_TextChanged"/>
+            <TextBlock x:Name="SearchHint" Text="在此文件夹中搜索" IsHitTestVisible="False"
+                       Margin="30,0,0,0" VerticalAlignment="Center" FontSize="12" Foreground="#A8AFB8"/>
+          </Grid>
+        </Border>
+
+        <Button Grid.Column="2" Content="新建文件夹" Height="26" Padding="10,0" FontSize="12"
+                Background="#EFF2F6" BorderBrush="#DDE1E7" BorderThickness="1"
+                Cursor="Hand" Click="NewFolder_Click"/>
+      </Grid>
+
+      <!-- ═══ 文件夹表格 ═══ -->
+      <Border Grid.Row="2" Margin="16,4,16,0" BorderBrush="#E7EAEE" BorderThickness="1" CornerRadius="4">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="30"/>
+            <RowDefinition Height="*"/>
+          </Grid.RowDefinitions>
+
+          <Grid Grid.Row="0" Background="#F7F9FB">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="150"/>
+              <ColumnDefinition Width="86"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="名称" FontSize="11.5" Foreground="#6E7681"
+                       VerticalAlignment="Center" Margin="12,0,0,0"/>
+            <TextBlock Grid.Column="1" Text="修改日" FontSize="11.5" Foreground="#6E7681"
+                       VerticalAlignment="Center" Margin="12,0,0,0"/>
+            <TextBlock Grid.Column="2" Text="类型" FontSize="11.5" Foreground="#6E7681"
+                       VerticalAlignment="Center" Margin="12,0,0,0"/>
+          </Grid>
+
+          <ListBox Grid.Row="1" x:Name="DirList" BorderThickness="0" Background="White"
+                   ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                   MouseDoubleClick="DirList_DoubleClick"
+                   SelectionChanged="DirList_SelectionChanged">
+            <ListBox.ItemContainerStyle>
+              <Style TargetType="ListBoxItem">
+                <Setter Property="Padding" Value="0"/>
+                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                <Setter Property="Template">
+                  <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                      <Border x:Name="B" Background="Transparent" Padding="0,0,0,0">
+                        <ContentPresenter/>
+                      </Border>
+                      <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                          <Setter TargetName="B" Property="Background" Value="#F2F6FD"/>
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                          <Setter TargetName="B" Property="Background" Value="#E3EDFD"/>
+                        </Trigger>
+                      </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                  </Setter.Value>
+                </Setter>
+              </Style>
+            </ListBox.ItemContainerStyle>
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <Grid Height="30">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="86"/>
+                  </Grid.ColumnDefinitions>
+                  <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center"
+                              Margin="12,0,0,0">
+                    <TextBlock Text="📁" FontSize="12" VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding Name}" FontSize="12.5" Foreground="#2B2F36"
+                               VerticalAlignment="Center" Margin="7,0,0,0"
+                               TextTrimming="CharacterEllipsis"/>
+                  </StackPanel>
+                  <TextBlock Grid.Column="1" Text="{Binding ModifiedText}" FontSize="11.5"
+                             Foreground="#6E7681" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                  <TextBlock Grid.Column="2" Text="文件夹" FontSize="11.5"
+                             Foreground="#6E7681" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                </Grid>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+
+          <TextBlock Grid.Row="1" x:Name="EmptyHint" Text="这个文件夹里没有子文件夹"
+                     FontSize="12" Foreground="#A8AFB8" HorizontalAlignment="Center"
+                     VerticalAlignment="Center" Visibility="Collapsed"/>
+        </Grid>
+      </Border>
+
+      <!-- ═══ 底部：当前文件夹 + 按钮 ═══ -->
+      <Grid Grid.Row="3" Margin="16,0,16,0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+
+        <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+          <TextBlock Text="文件夹：" FontSize="12" Foreground="#6E7681" VerticalAlignment="Center"/>
+          <TextBlock x:Name="ChosenPathText" FontSize="12" Foreground="#2B2F36"
+                     VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="480"/>
+        </StackPanel>
+
+        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+          <Button Content="选择文件夹" Height="32" Padding="20,0" FontSize="12.5"
+                  Foreground="White" Background="#1D6FEB" BorderThickness="0"
+                  Cursor="Hand" Click="Ok_Click"/>
+          <Button Content="取消" Height="32" Padding="18,0" Margin="10,0,0,0" FontSize="12.5"
+                  Foreground="#3B4148" Background="#EFF2F6" BorderBrush="#DDE1E7"
+                  BorderThickness="1" Cursor="Hand" Click="Cancel_Click"/>
+        </StackPanel>
+      </Grid>
+    </Grid>
+  </Border>
+</Window>

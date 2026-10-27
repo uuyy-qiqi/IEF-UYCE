@@ -85,16 +85,13 @@ public partial class InstancesWindow : Window
     /// </summary>
     private async void AddFolder_Click(object sender, RoutedEventArgs e)
     {
-        var dlg = new Microsoft.Win32.OpenFolderDialog
-        {
-            Title = "选一个已经下好的 .minecraft 文件夹（或整合包文件夹）",
-            Multiselect = false,
-        };
+        // 用自家那个「选择文件夹」：PCL 的选目录框能一眼看见名称 / 修改日 / 类型，
+        // 选之前就知道这个文件夹是什么、多新。系统框只有一个名字，选 .minecraft
+        // 和选 .minecraft 的备份长得一模一样。
+        var picked = FolderPickerDialog.Pick(this);
+        if (string.IsNullOrWhiteSpace(picked)) return;
 
-        if (dlg.ShowDialog() != true) return;
-        if (string.IsNullOrWhiteSpace(dlg.FolderName)) return;
-
-        var picked = dlg.FolderName.TrimEnd('\\', '/');
+        picked = picked.TrimEnd('\\', '/');
 
         _vm.Tasks.Begin("导入文件夹：" + System.IO.Path.GetFileName(picked));
         new TasksWindow(_vm) { Owner = this }.Show();
@@ -175,9 +172,7 @@ public partial class InstancesWindow : Window
         }
 
         // 图标跟列表里那一行同色，右侧这块和左栏是一个实例的两面
-        DetailGlyph.TopBrush = row.Top;
-        DetailGlyph.LeftBrush = row.Left;
-        DetailGlyph.RightBrush = row.Right;
+        DetailIcon.Source = new System.Windows.Media.Imaging.BitmapImage(new Uri(row.IconSource, UriKind.Absolute));
 
         DetailName.Text = inst.Name;
         DetailMc.Text = row.McVersion;

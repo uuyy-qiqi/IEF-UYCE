@@ -787,6 +787,7 @@ public sealed class MainViewModel : ObservableObject
             _selectedInstance = value;
             OnPropertyChanged();
             OnPropertyChanged(nameof(InstanceLabel));
+            OnPropertyChanged(nameof(CurrentInstanceIcon));
             OnPropertyChanged(nameof(InstanceIsolationLabel));
 
             // 实例自带它挂的版本（可能就是 Fabric/Cleanroom 这些加载器版本）。
@@ -807,6 +808,21 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>启动页「当前实例」卡上的名字。</summary>
     public string InstanceLabel => SelectedInstance is null ? "未选择实例" : SelectedInstance.Name;
 
+    /// <summary>启动页「当前实例」那张头像：按实例的加载器挑图，和实例列表同一套。</summary>
+    public string CurrentInstanceIcon
+    {
+        get
+        {
+            var hay = $"{SelectedInstance?.Loader} {SelectedInstance?.VersionId}".ToLowerInvariant();
+            var key =
+                hay.Contains("neoforge") ? "neoforge" :
+                hay.Contains("forge") ? "forge" :
+                hay.Contains("fabric") ? "fabric" :
+                hay.Contains("quilt") ? "quilt" : "release";
+            return $"pack://application:,,,/Assets/icons/ver_{key}.jpg";
+        }
+    }
+
     /// <summary>独立 / 共享。界面上要显示，因为它决定存档在哪儿。</summary>
     public string InstanceIsolationLabel => SelectedInstance?.IsolationLabel ?? "共享";
 
@@ -824,6 +840,7 @@ public sealed class MainViewModel : ObservableObject
 
         OnPropertyChanged(nameof(SelectedInstance));
         OnPropertyChanged(nameof(InstanceLabel));
+            OnPropertyChanged(nameof(CurrentInstanceIcon));
         OnPropertyChanged(nameof(InstanceIsolationLabel));
     }
 
@@ -1298,6 +1315,10 @@ public sealed class MainViewModel : ObservableObject
                     var r = await PclLike.Core.Content.BundleImporter.ImportAsync(
                         path, layout, bundleInst.GameDir, GameRoot,
                         s => AppendLog(LogKind.Normal, s));
+
+                    // 拖进来的可能是 .rar/.7z，分类时已经解成临时 zip 了 —— 用完删掉，
+                    // 不然解出来的那份会一直躺在 %LOCALAPPDATA%\PclLike\import-cache。
+                    PclLike.Core.Content.ArchiveNormalizer.Release(path);
 
                     if (!r.Ok)
                     {
@@ -2379,6 +2400,41 @@ public sealed record VersionItem(string Id, string Type, DateTimeOffset? Release
 
     /// <summary>列表里的主标题，绑定到 ListBox 显示。</summary>
     public string Display => Id;
+
+    /// <summary>
+    /// 行首图标：直接给一张头像图（Assets\icons\ver_*.jpg），按版本类型/加载器挑。
+    ///
+    /// 原来是等距方块 + 配色，用户要求换成图。图是 24×24 的小方块显示，
+    /// 所以绑定的是 pack URI 字符串，WPF 会自己转成 ImageSource。
+    /// </summary>
+    public string IconSource
+    {
+        get
+        {
+            var key = Type switch
+            {
+                "release" => "release",
+                "snapshot" => "snapshot",
+                "old_beta" => "old",
+                "old_alpha" => "old",
+                "installed" => LoaderKey(Id),
+                _ => "other",
+            };
+            return $"pack://application:,,,/Assets/icons/ver_{key}.jpg";
+        }
+    }
+
+    /// <summary>已安装的那些：按版本 id 里的加载器名挑图标。</summary>
+    private static string LoaderKey(string id)
+    {
+        var k = id.ToLowerInvariant();
+        if (k.Contains("neoforge")) return "neoforge";
+        if (k.Contains("forge")) return "forge";      // 放在 neoforge 后面
+        if (k.Contains("fabric")) return "fabric";
+        if (k.Contains("quilt")) return "quilt";
+        if (k.Contains("optifine")) return "optifine";
+        return "other";
+    }
 }
 
 public enum LogKind { Normal, Info, Ok, Warning, Error, Muted }

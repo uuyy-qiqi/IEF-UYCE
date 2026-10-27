@@ -121,6 +121,7 @@ internal static class WindowShot
             Check("InstancesWindow", () => win.InstancesForShot());
             Check("AccountWindow", () => win.AccountForShot());
             Check("LoginWindow", () => new LoginWindow(new PclLike.Core.Login.MicrosoftAuth(null)));
+            Check("FolderPickerDialog", () => new FolderPickerDialog());
 
             foreach (var r in results) Console.WriteLine(r);
         }

@@ -294,10 +294,12 @@
                                 <ColumnDefinition Width="*"/>
                               </Grid.ColumnDefinitions>
 
-                              <local:BlockGlyph Width="28" Height="28" VerticalAlignment="Center"
-                                                TopBrush="{Binding Top}"
-                                                LeftBrush="{Binding Left}"
-                                                RightBrush="{Binding Right}"/>
+                              <Border Width="28" Height="28" CornerRadius="7" VerticalAlignment="Center"
+                                                Background="{StaticResource SelectedBrush}" ClipToBounds="True">
+                                <Image Source="{Binding IconSource, Mode=OneWay}"
+                                       Stretch="UniformToFill"
+                                       RenderOptions.BitmapScalingMode="HighQuality"/>
+                              </Border>
 
                               <StackPanel Grid.Column="1" Margin="10,0,0,0"
                                           VerticalAlignment="Center">
@@ -353,8 +355,11 @@
               <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <local:BlockGlyph x:Name="DetailGlyph" Width="36" Height="36"
-                              VerticalAlignment="Center"/>
+            <Border Width="36" Height="36" CornerRadius="9" VerticalAlignment="Center"
+                    Background="{StaticResource SelectedBrush}" ClipToBounds="True">
+              <Image x:Name="DetailIcon" Stretch="UniformToFill"
+                     RenderOptions.BitmapScalingMode="HighQuality"/>
+            </Border>
 
             <StackPanel Grid.Column="1" Margin="13,0,0,0" VerticalAlignment="Center">
               <TextBlock x:Name="DetailName" FontSize="16" FontWeight="Bold"

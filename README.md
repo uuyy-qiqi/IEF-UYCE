@@ -1,74 +1,131 @@
-# PclLike
+# IEF-UYCE
 
-一个自己写的 Minecraft 启动器（.NET 8 + WPF）。功能上对齐 PCL2：版本下载与安装、
-加载器安装（Forge / NeoForge / Fabric）、实例隔离、Mod 管理、正版与离线登录，
-界面照 PCL2 CE 的布局做。
+一个从零写的 Minecraft 启动器（.NET 8 + WPF），界面照着 PCL2 的手感做的。
+版本安装、整合包导入、实例管理、联机大厅、百宝箱全都有，没有依赖任何启动器框架。
 
-## 怎么跑
+> 本项目与 PCL2、HMCL、Modrinth、CurseForge 均无隶属关系，只是尽量做得好用一点。
 
-需要 .NET 8 SDK。本机用的是用户级安装，所以路径得显式指一下：
+---
 
-```powershell
-$env:DOTNET_ROOT = 'C:\Users\yuwei\.dotnet'
-$env:PATH = "C:\Users\yuwei\.dotnet;$env:PATH"
+## 它能做什么
 
-# 编译
-dotnet build src\PclLike.Gui\PclLike.Gui.csproj
+### 版本安装
 
-# 跑图形界面
-dotnet run --project src\PclLike.Gui
-
-# 命令行（无界面，装了就能下）
-dotnet run --project src\PclLike.Cli -- --help
-```
-
-## 工程结构
-
-```
-src\PclLike.Core    纯逻辑，不依赖 WPF（能单独单元测试）
-src\PclLike.Gui     WPF 界面
-src\PclLike.Cli     命令行
-```
-
-Core 里几块主要的东西：
-
-| 目录 | 管什么 |
+| 加载器 | 支持情况 |
 |---|---|
-| `Minecraft\` | 版本清单、版本 JSON、libraries/assets 下载、参数拼装、启动 |
-| `Minecraft\Loaders\` | Forge / NeoForge / Fabric 的安装，含 installer 的 processor 链 |
-| `Storage\` | 实例（GameInstance）、配置、持久化 |
-| `Mods\` | Mod 扫描、元数据、依赖分析、搜索与下载 |
-| `Login\` | 微软正版登录（设备代码流）、离线账号 |
+| 原版 | 全版本，走官方版本清单 |
+| Fabric | ✅ 全版本 |
+| Forge | ✅ 全版本（补丁链自己跑，含 `install_profile.json` 里的库） |
+| NeoForge | ✅ 1.20.2+ |
+| Quilt | ✅ |
+| Legacy Fabric | ✅ 1.6–1.13 |
+| OptiFine | ✅（先装同版本 Forge，再把 jar 放进 mods —— OptiFine 的补丁产出是 Mod 形态，不是完整客户端） |
+| LiteLoader | ✅ 1.7.10–1.12.2 |
+| Cleanroom | ✅ 1.12.2 |
 
-## 自检与出图
+### 整合包导入
 
-界面改动光编译过不算数 —— XAML 的资源引用、布局塌陷、绑定写错编译期都不报。
-所以有两个探针：
+拖进窗口就行，认这些格式：
+
+- **Modrinth** `.mrpack`
+- **CurseForge** 清单包（`manifest.json`）—— 只给 projectID/fileID，文件名靠 cfwidget 反查
+- **`.rar` / `.7z` / `.tar.gz` / `.tgz` / `.bz2` / `.xz`** —— 自动解包再按内容识别（SharpCompress）
+- **解压即玩懒人包**（包里带整个 `.minecraft`，或者带 `versions/<id>/<id>.json`）
+- **Prism / MultiMC** 导出（`mmc-pack.json` / `instance.cfg`）
+- **HMCL / MCBBS** 格式（`mcbbs.packmeta`）
+- **PCL** 导出（`PCL/Setup.ini`）
+- **Technic**（`bin/modpack.jar`）
+- **手工包**：有 `mods/` 但没清单 —— 整包铺进实例，版本和加载器在界面上选
+- 外层套了一层作者文件夹的包（`包名/mods/...`）也能认
+
+### 其它
+
+- **实例管理**：每个实例独立目录 / 独立 `mods`，可复制、删除、改目录；分组折叠 + 关键词搜索
+- **联机大厅**：局域网世界扫描 + 服务器列表（只做局域网，不开端口）
+- **百宝箱**：游戏目录体检、垃圾清理
+- **社区资源**：Modrinth 搜索下载（mod / 整合包 / 资源包 / 光影 / 存档）
+- **正版登录**：微软账号，WebView2 内嵌登录窗
+- **分层透明窗口**：逐像素 alpha，不是亚克力那种假透明
+
+---
+
+## 怎么构建
+
+需要 **.NET SDK 8**（`dotnet --version` 应该是 8.x）。
 
 ```powershell
-$exe = "src\PclLike.Gui\bin\Debug\net8.0-windows\PclLike.exe"
+# 调试运行
+dotnet run --project src/PclLike.Gui
 
-# 自检：把窗口真建起来，逐项检查控件和绑定
-& $exe --selftest
+# 发布（框架依赖，体积小，目标机要装 .NET 8 Desktop Runtime）
+dotnet publish src/PclLike.Gui -c Release -o dist
 
-# 出图：把窗口渲染成 PNG 看长什么样
-& $exe --shoot tools\shots\launch.png 1120 720 launch
-& $exe --shoot tools\shots\set_java.png 1120 720 settings --section set-java
+# 发布（自包含，目标机什么都不用装，165 MB 左右）
+dotnet publish src/PclLike.Gui -c Release -r win-x64 --self-contained true -o dist-portable
 ```
 
-`--section` 可以切设置页 / 工具页里的分区（`set-java` / `set-account` /
-`set-appearance` / `set-misc` / `lobby` / `toolbox` / `help`）。
+> `PublishSingleFile` 目前在 .NET 8.0.404 + WPF 上会报 `MSB4018 / Bundler.IsAssembly`，
+> 所以只提供"文件夹 + zip"的发布形态。
 
-## 踩过的坑
+### 跑测试
 
-- **别用 PowerShell 5.1 的 `Get-Content` / `Set-Content` 读写这些源文件。**
-  它默认按 ANSI（中文机器上是 GBK）解码，UTF-8 源码里的中文注释会被双重编码变成
-  乱码，而且这个过程有损（不可逆）。用编辑器工具，或者显式
-  `[IO.File]::ReadAllText($p, [Text.Encoding]::UTF8)`。
-- **截图探针必须复用 `App` 的资源字典**，不能自己 `new ResourceDictionary`，
-  否则 `BoolVis` 之类的转换器找不到，折叠面板的绑定会静默失效。
-- **Core 不依赖 WPF**：皮肤头像的解析放 Core，画到界面上的是 Gui 里的
-  `SkinHeadView`。放错层直接编译不过。
-- NeoForge 的 `install_profile.json` 里的 `libraries` 只用于 processor，
-  **不能**混进游戏 classpath；而且 `processors[].outputs` 是 JSON 对象
-  （`{"path": ...}`），不是字符串；`data` 表里的 `[maven{...}]` 占位符要还原。
+项目里一堆 `probe-*` 控制台项目，用来**真的连网/真的装一遍**验收某个子功能，不是 mock：
+
+```powershell
+dotnet run --project probe-classify --  某个整合包.zip     # 看拖入文件被认成什么
+dotnet run --project probe-loader -- forge 1.20.1 --list-only  # 加载器版本列表
+dotnet run --project probe-pack -- 整合包.zip             # 真装一遍整合包
+```
+
+启动器自己还有自检：`PclLike.exe --selftest`（110 项，全过才退出码 0）。
+
+---
+
+## 运行环境
+
+- Windows 10 / 11（64 位）
+- 玩游戏需要 Java：1.18+ 用 JDK 17，1.12.2 及更早用 JDK 8。启动器会自动找，也可以在设置里手动指定
+- 正版登录需要 WebView2 运行时（Win11 自带；Win10 可能要装一次）
+- 配置目录：`%APPDATA%\.pcllike`（版本、实例、账号、日志都在里面）
+
+---
+
+## 代码结构
+
+```
+src/PclLike.Core/         纯逻辑，不依赖 WPF
+├── Minecraft/            版本清单、库、资源、启动参数、进程
+│   ├── Launch/           ArgumentBuilder / ClasspathBuilder / GameLauncher
+│   └── Loaders/          各加载器安装器（Fabric/Forge/NeoForge/Quilt/...）
+├── Content/              整合包与资源安装
+│   ├── DroppedContent.cs 拖入文件分类器（格式判定的唯一入口）
+│   ├── ArchiveNormalizer.cs  rar/7z → zip 适配层
+│   ├── BundleImporter.cs 懒人包导入
+│   ├── ModPackInstaller.cs  .mrpack
+│   └── CursePack.cs      CurseForge 清单包
+├── Storage/              实例、账号、设置持久化
+├── Net/                  代理解析、DNS 候选、CDN 光标轮换
+├── Login/                微软登录
+├── Online/               联机大厅
+└── Diagnostics/          体检、清理
+
+src/PclLike.Gui/          WPF 界面
+src/PclLike.Cli/          命令行
+probe-*/                  一次性验收探针（真的连网跑）
+```
+
+---
+
+## 已知限制
+
+- 未签名 exe，SmartScreen 会提示"未知发布者"
+- 加密的 rar/7z 解不开（会明确报错，不会静默失败）
+- CurseForge 文件偶发 403 / 超时：有 3 轮重试 + 失败清单写到实例目录下的 `下载失败.txt`，再拖一次同一个包会跳过已装好的、只补缺的
+- 没有自动更新
+- 只支持 Windows
+
+---
+
+## License
+
+MIT，见 [LICENSE](LICENSE)。
