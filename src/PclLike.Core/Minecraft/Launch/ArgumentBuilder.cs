@@ -45,6 +45,45 @@ public sealed class LaunchConfig
 
     /// <summary>额外游戏参数。</summary>
     public IReadOnlyList<string> ExtraGameArgs { get; init; } = [];
+/// <summary>
+    /// 从正版 accessToken（JWT）里抠出 xuid。
+    ///
+    /// 命令行的 <c>--xuid</c> 要的是真值。以前没有这个字段，补上之后先写死
+    /// "0" —— 已经不是占位符了，但仍然是个假的玩家 id。而 accessToken 的
+    /// payload 里本来就有 xuid 声明（微软账号在 Xbox 网络里的玩家 id），
+    /// 直接读它即可，不需要多一次网络请求、也不用让用户重新登录。
+    /// 读不出来返回 null，调用方退回 "0"（离线档那条路本来就该是 0）。
+    /// </summary>
+    public static string? XuidFromAccessToken(string? accessToken)
+    {
+        if (string.IsNullOrWhiteSpace(accessToken)) return null;
+        var parts = accessToken.Split('.');
+        if (parts.Length < 2) return null;   // 离线档的 token 就是个 "0"，不是 JWT
+
+        try
+        {
+            var json = System.Text.Encoding.UTF8.GetString(DecodeBase64Url(parts[1]));
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("xuid", out var x) &&
+                x.ValueKind == System.Text.Json.JsonValueKind.String &&
+                !string.IsNullOrWhiteSpace(x.GetString()))
+            {
+                return x.GetString();
+            }
+        }
+        catch
+        {
+            // token 形状不对就当拿不到 —— 不能因为读不出 xuid 就让启动失败
+        }
+        return null;
+    }
+
+    private static byte[] DecodeBase64Url(string s)
+    {
+        s = s.Replace('-', '+').Replace('_', '/');
+        s = (s.Length % 4) switch { 2 => s + "==", 3 => s + "=", _ => s };
+        return Convert.FromBase64String(s);
+    }
 }
 
 /// <summary>

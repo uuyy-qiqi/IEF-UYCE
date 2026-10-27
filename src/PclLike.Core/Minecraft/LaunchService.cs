@@ -260,6 +260,8 @@ public sealed class LaunchService : IDisposable
             UserType = string.IsNullOrWhiteSpace(options.AccessToken) || options.AccessToken == "0"
                 ? "legacy"
                 : "msa",
+            // 正版账号的 --xuid 取 accessToken 里的真实值；离线档保持 0。
+            Xuid = LaunchConfig.XuidFromAccessToken(options.AccessToken) ?? "0",
             MaxMemoryMb = maxMem,
             MinMemoryMb = options.MinMemoryMb,
             ServerAddress = options.ServerAddress,
