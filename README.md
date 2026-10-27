@@ -7,6 +7,22 @@
 
 ---
 
+## 只想玩，不想编译？三步
+
+1. 打开 **[Releases](https://github.com/uuyy-qiqi/IEF-UYCE/releases/latest)**，下载 `IEF-UYCE-v1-win-x64.zip`（约 70 MB）
+2. 解压到**路径里没有中文、没有空格**的地方（例如 `D:\IEF-UYCE`），双击 `PclLike.exe`
+3. 到「设置 → Java」确认 Java 路径 —— Minecraft 1.18 及以上要 **Java 17**，1.12.2 及更早要 **Java 8**
+
+然后：
+
+- 想装游戏：点「下载」→ 选版本 → 安装
+- 有整合包：把 zip / mrpack / rar / 7z **直接拖进启动器窗口**，它自己认
+- 配置和数据都在 `%APPDATA%\.pcllike`，删掉这个目录就恢复出厂
+
+这个包是**自包含**的，机器上不需要装 .NET。第一次运行 SmartScreen 会拦一下（未签名），点「更多信息 → 仍要运行」。
+
+---
+
 ## 它能做什么
 
 ### 版本安装
