@@ -1,22 +1,47 @@
 # IEF-UYCE
 
 一个从零写的 Minecraft 启动器（.NET 8 + WPF），界面照着 PCL2 的手感做的。
-版本安装、整合包导入、实例管理、联机大厅、百宝箱全都有，没有依赖任何启动器框架。
+版本安装、整合包一键下载与导入、Mod / 光影 / 资源包直装、实例管理、联机大厅、百宝箱全都有，没有依赖任何启动器框架。
 
 > 本项目与 PCL2、HMCL、Modrinth、CurseForge 均无隶属关系，只是尽量做得好用一点。
 
 ---
 
+## 界面预览
+
+### 初始启动页
+默认采用清晰易读的**纯白不透明**背景（可在「设置 → 个性化 → 窗口背景」中实时切换回**半透明**模式），左侧展示正版头像与一键启动，右侧一目了然查看当前实例、Java 与内存配置。
+
+![初始启动页](docs/images/home.png)
+
+### 游戏版本下载
+支持原版全版本及 Fabric / Forge / NeoForge / Quilt / OptiFine / Legacy Fabric / LiteLoader / Cleanroom 等主流加载器安装。
+
+![游戏版本下载](docs/images/versions.png)
+
+### 整合包一键下载与安装
+默认不限游戏版本与加载器，支持浏览近 20,000 个整合包；每条卡片均展示**封面图、中文分类标签、支持版本范围与下载量**，底部支持分页「加载更多」。点击「安装」自动新建独立实例、6 并发下载全部资源并补全对应加载器，装完即可直接启动；也支持粘贴 Modrinth 链接或文件直链一键导入。
+
+![整合包下载页](docs/images/modpacks.jpg)
+
+### Mod / 光影 / 资源包 / 数据包直装
+按当前实例自动匹配版本与加载器，下载 Mod 时自动递归补齐必需前置库；安装光影包时自动检测并提示 Iris / Oculus，下载即导入、开箱即用。
+
+![Mod 下载页](docs/images/mods.jpg)
+
+---
+
 ## 只想玩，不想编译？三步
 
-1. 打开 **[Releases](https://github.com/uuyy-qiqi/IEF-UYCE/releases/latest)**，下载 `IEF-UYCE-v1-win-x64.zip`（约 70 MB）
+1. 打开 **[Releases](https://github.com/uuyy-qiqi/IEF-UYCE/releases/latest)**，下载 `IEF-UYCE-v1.1.0-win-x64.zip`（约 70 MB）
 2. 解压到**路径里没有中文、没有空格**的地方（例如 `D:\IEF-UYCE`），双击 `PclLike.exe`
-3. 到「设置 → Java」确认 Java 路径 —— Minecraft 1.18 及以上要 **Java 17**，1.12.2 及更早要 **Java 8**
+3. 到「设置 → Java」确认 Java 路径 —— Minecraft 1.20.5+ 建议 **Java 21**，1.18–1.20.4 要 **Java 17**，1.12.2 及更早要 **Java 8**
 
 然后：
 
 - 想装游戏：点「下载」→ 选版本 → 安装
-- 有整合包：把 zip / mrpack / rar / 7z **直接拖进启动器窗口**，它自己认
+- 想玩整合包 / Mod / 光影：点「下载」→ 选对应社区资源 → 点「安装」直接自动导入并可用（也支持粘贴链接导入）
+- 有本地整合包：把 `zip` / `mrpack` / `rar` / `7z` **直接拖进启动器窗口**，它自己认
 - 配置和数据都在 `%APPDATA%\.pcllike`，删掉这个目录就恢复出厂
 
 这个包是**自包含**的，机器上不需要装 .NET。第一次运行 SmartScreen 会拦一下（未签名），点「更多信息 → 仍要运行」。
@@ -25,11 +50,24 @@
 
 ## 它能做什么
 
+### 社区资源下载（PCL2 风格）
+
+- **整合包**：默认展示海量热门整合包，带封面图、中文分类标签、版本范围与分页加载；点击「安装」自动新建独立实例、6 并发下载全部 Mod 与配置并补齐加载器
+- **Mod**：按当前实例加载器过滤，安装时自动递归补齐必需前置依赖，避免缺前置崩溃
+- **光影包 / 资源包 / 数据包 / 世界**：自动下载并导入到当前实例对应的资源目录；装光影时自动检测并提示是否缺少 Iris / Oculus
+- **链接下载导入**：支持直接粘贴 Modrinth 项目链接或文件直链，一键下载并导入当前实例
+
+### 大型整合包稳定性与性能优化
+
+- **内存与 JVM 参数可靠生效**：自定义最大内存（`MaxMemoryMb`）与额外 JVM 参数持久化同步，不会在保存配置时被重置
+- **G1GC 与超长命令行支持**：默认附带适合大内存的 G1GC 垃圾回收参数；Windows 下启动大型整合包触发超长命令行时（Java 9+）自动切换 `@argfile`，避免启动失败
+- **后台解包与防卡死**：整合包分类、解包与 `overrides` 覆盖全面在后台线程执行，海量日志自动裁剪与节流，导入和运行几百个 Mod 的大包也能保持界面流畅
+
 ### 版本安装
 
 | 加载器 | 支持情况 |
 |---|---|
-| 原版 | 全版本，走官方版本清单 |
+| 原版 | ✅ 全版本，走官方版本清单 |
 | Fabric | ✅ 全版本 |
 | Forge | ✅ 全版本（补丁链自己跑，含 `install_profile.json` 里的库） |
 | NeoForge | ✅ 1.20.2+ |
@@ -39,13 +77,13 @@
 | LiteLoader | ✅ 1.7.10–1.12.2 |
 | Cleanroom | ✅ 1.12.2 |
 
-### 整合包导入
+### 本地整合包拖放导入
 
 拖进窗口就行，认这些格式：
 
 - **Modrinth** `.mrpack`
 - **CurseForge** 清单包（`manifest.json`）—— 只给 projectID/fileID，文件名靠 cfwidget 反查
-- **`.rar` / `.7z` / `.tar.gz` / `.tgz` / `.bz2` / `.xz`** —— 自动解包再按内容识别（SharpCompress）
+- **`.rar` / `.7z` / `.tar.gz` / `.tgz` / `.bz2` / `.xz`** —— 自动解包再按内容识别（SharpCompress），导入完成后自动清理临时缓存
 - **解压即玩懒人包**（包里带整个 `.minecraft`，或者带 `versions/<id>/<id>.json`）
 - **Prism / MultiMC** 导出（`mmc-pack.json` / `instance.cfg`）
 - **HMCL / MCBBS** 格式（`mcbbs.packmeta`）
@@ -56,12 +94,11 @@
 
 ### 其它
 
+- **窗口背景实时切换**：默认**纯白不透明**（清晰易读），也可在「设置 → 个性化 → 窗口背景」一键实时切换为**分层半透明**（逐像素 alpha），自动保存无需重启
 - **实例管理**：每个实例独立目录 / 独立 `mods`，可复制、删除、改目录；分组折叠 + 关键词搜索
 - **联机大厅**：局域网世界扫描 + 服务器列表（只做局域网，不开端口）
 - **百宝箱**：游戏目录体检、垃圾清理
-- **社区资源**：Modrinth 搜索下载（mod / 整合包 / 资源包 / 光影 / 存档）
 - **正版登录**：微软账号，WebView2 内嵌登录窗
-- **分层透明窗口**：逐像素 alpha，不是亚克力那种假透明
 
 ---
 
@@ -76,7 +113,7 @@ dotnet run --project src/PclLike.Gui
 # 发布（框架依赖，体积小，目标机要装 .NET 8 Desktop Runtime）
 dotnet publish src/PclLike.Gui -c Release -o dist
 
-# 发布（自包含，目标机什么都不用装，165 MB 左右）
+# 发布（自包含，目标机什么都不用装，解压约 165 MB，压缩包约 70 MB）
 dotnet publish src/PclLike.Gui -c Release -r win-x64 --self-contained true -o dist-portable
 ```
 
@@ -100,7 +137,7 @@ dotnet run --project probe-pack -- 整合包.zip             # 真装一遍整�
 ## 运行环境
 
 - Windows 10 / 11（64 位）
-- 玩游戏需要 Java：1.18+ 用 JDK 17，1.12.2 及更早用 JDK 8。启动器会自动找，也可以在设置里手动指定
+- 玩游戏需要 Java：1.20.5+ 建议 JDK 21，1.18–1.20.4 用 JDK 17，1.12.2 及更早用 JDK 8。启动器会自动找，也可以在设置里手动指定
 - 正版登录需要 WebView2 运行时（Win11 自带；Win10 可能要装一次）
 - 配置目录：`%APPDATA%\.pcllike`（版本、实例、账号、日志都在里面）
 
@@ -117,8 +154,9 @@ src/PclLike.Core/         纯逻辑，不依赖 WPF
 │   ├── DroppedContent.cs 拖入文件分类器（格式判定的唯一入口）
 │   ├── ArchiveNormalizer.cs  rar/7z → zip 适配层
 │   ├── BundleImporter.cs 懒人包导入
-│   ├── ModPackInstaller.cs  .mrpack
+│   ├── ModPackInstaller.cs  .mrpack（6 并发下载）
 │   └── CursePack.cs      CurseForge 清单包
+├── Mods/                 Modrinth 搜索、封面缓存、前置解析与链接下载
 ├── Storage/              实例、账号、设置持久化
 ├── Net/                  代理解析、DNS 候选、CDN 光标轮换
 ├── Login/                微软登录
