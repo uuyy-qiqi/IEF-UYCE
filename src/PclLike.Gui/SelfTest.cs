@@ -156,7 +156,7 @@ public static class SelfTest
             // 就等于"消失"了 —— 所以这一组值得单独测。
             notes.Add("  测试实例...");
 
-            var store = new Core.Storage.InstanceStore(App.GameRoot);
+            var store = vm.Store;
             vm.RefreshInstances();
             Check(vm.Instances.Count == 0 || vm.SelectedInstance is not null,
                 "能选出一个当前实例", vm.InstanceLabel);

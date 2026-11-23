@@ -64,6 +64,9 @@ public sealed class LauncherConfig
     /// <summary>默认是否按实例隔离版本目录。</summary>
     [JsonPropertyName("isolateInstances")] public bool IsolateInstances { get; set; } = true;
 
+    /// <summary>自定义实例安装目录（空表示使用默认目录 &lt;启动器根&gt;/instances）。</summary>
+    [JsonPropertyName("instancesDir")] public string? InstancesDir { get; set; }
+
     /// <summary>游戏进程优先级：high / normal / low。</summary>
     [JsonPropertyName("processPriority")] public string ProcessPriority { get; set; } = "high";
 

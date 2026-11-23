@@ -67,9 +67,14 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
 
     private readonly ModDownloader _downloader = new();
     private readonly FavoritesStore _favorites;
-    private readonly string _tempDir;
     private readonly string _launcherRoot;
+    private readonly InstanceStore? _store;
     private readonly CancellationTokenSource _cts = new();
+
+    /// <summary>下载临时缓存目录：优先落在玩家选定的实例安装目录下，避免占用 C 盘空间。</summary>
+    private string TempDir => _store is not null
+        ? Path.Combine(_store.InstancesDir, ".download-cache")
+        : Path.Combine(Path.GetTempPath(), "pcllike-content");
 
     /// <summary>收藏夹存在启动器根目录下 —— 它是全启动器一份，不跟着实例走。</summary>
     public ContentViewModel(
@@ -79,7 +84,8 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
         Action<string>? onProgress = null,
         Func<string, string?, GameInstance?>? createPackInstance = null,
         Func<IReadOnlyList<string>, Task<string>>? importDownloadedFiles = null,
-        Action? onInstanceUpdated = null)
+        Action? onInstanceUpdated = null,
+        InstanceStore? store = null)
     {
         _instance = instance;
         _log = log;
@@ -89,7 +95,7 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
         _onInstanceUpdated = onInstanceUpdated;
         _favorites = new FavoritesStore(launcherRoot);
         _launcherRoot = launcherRoot;
-        _tempDir = Path.Combine(Path.GetTempPath(), "pcllike-content");
+        _store = store;
 
         // 先把栏目设成 Mod，但**不**自动搜 —— 构造函数里发网络请求，
         // 会让"打开下载页"这件事莫名其妙地慢。真正的第一次搜索由
@@ -651,8 +657,9 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
             }
 
             var ext = Path.GetExtension(cand.FileName);
-            tmp = Path.Combine(_tempDir, Guid.NewGuid().ToString("N") + (ext.Length > 0 ? ext : ".jar"));
-            Directory.CreateDirectory(_tempDir);
+            var cacheDir = TempDir;
+            tmp = Path.Combine(cacheDir, Guid.NewGuid().ToString("N") + (ext.Length > 0 ? ext : ".jar"));
+            Directory.CreateDirectory(cacheDir);
 
             var progress = new Progress<DownloadProgress>(p =>
             {
@@ -823,12 +830,13 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
         var tmp = "";
         try
         {
-            Directory.CreateDirectory(_tempDir);
+            var cacheDir = TempDir;
+            Directory.CreateDirectory(cacheDir);
             var guessedName = Path.GetFileName(new Uri(url).AbsolutePath);
             if (string.IsNullOrWhiteSpace(guessedName) || !guessedName.Contains('.'))
                 guessedName = "download.zip";
 
-            tmp = Path.Combine(_tempDir, $"{Guid.NewGuid():N}_{ContentInstaller.SafeName(guessedName, "download.zip")}");
+            tmp = Path.Combine(cacheDir, $"{Guid.NewGuid():N}_{ContentInstaller.SafeName(guessedName, "download.zip")}");
             StatusMessage = $"正在从链接下载 {guessedName}…";
             _log(LogKind.Info, $"通过链接下载：{url}");
 
@@ -906,7 +914,9 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
                 var expectedDest = ContentInstaller.ResolveInside(modsDir, ContentInstaller.SafeName(depCand.FileName, "dep.jar"));
                 if (expectedDest is not null && File.Exists(expectedDest)) continue;
 
-                var depTmp = Path.Combine(_tempDir, Guid.NewGuid().ToString("N") + ".jar");
+                var cacheDir = TempDir;
+                Directory.CreateDirectory(cacheDir);
+                var depTmp = Path.Combine(cacheDir, Guid.NewGuid().ToString("N") + ".jar");
                 try
                 {
                     StatusMessage = $"正在自动补齐前置依赖：{depCand.Name}…";
@@ -1037,8 +1047,8 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
                 inst.VersionId = r.VersionId;
                 inst.Loader = plan.LoaderName.ToLowerInvariant();
 
-                // 存盘 —— 只改内存里的对象没用，下次开启动器读的还是文件。
-                try { new PclLike.Core.Storage.InstanceStore(_launcherRoot).Save(inst); }
+                // 存盘 —— 写入当前实例仓库（支持自定义实例安装目录），避免落回 C 盘默认目录。
+                try { (_store ?? new PclLike.Core.Storage.InstanceStore(_launcherRoot)).Save(inst); }
                 catch (Exception se)
                 {
                     _log(LogKind.Warning, $"{Title}：实例存盘失败 —— {se.Message}");

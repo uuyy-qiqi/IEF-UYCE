@@ -14,7 +14,7 @@
     <AssemblyTitle>IEF-UYCE版</AssemblyTitle>
     <Description>IEF-UYCE版 —— 自写的 Minecraft 启动器</Description>
     <StartupObject>PclLike.Gui.Program</StartupObject>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <Platforms>AnyCPU;x64</Platforms>
     <!-- exe 内嵌图标：任务栏、开始菜单、资源管理器里显示的都是它 -->
     <ApplicationIcon>Assets\pclike.ico</ApplicationIcon>

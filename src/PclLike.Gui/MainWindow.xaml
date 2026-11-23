@@ -979,6 +979,34 @@
                   </ComboBox>
                 </Grid>
 
+                <Grid Margin="0,0,0,3">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="118"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Grid.Column="0" Text="实例安装目录" FontSize="13"
+                             Foreground="{StaticResource TextSoftBrush}" VerticalAlignment="Center"/>
+                  <TextBox Grid.Column="1" IsReadOnly="True"
+                           Text="{Binding InstancesDirDisplay, Mode=OneWay}"
+                           ToolTip="{Binding InstancesDirDisplay, Mode=OneWay}"/>
+                  <Button Grid.Column="2" Content="选择目录" Style="{StaticResource FlatButton}"
+                          Margin="6,0,0,0" Padding="10,4"
+                          Click="BrowseInstancesDir_Click"/>
+                  <Button Grid.Column="3" Content="打开" Style="{StaticResource FlatButton}"
+                          Margin="6,0,0,0" Padding="10,4"
+                          Click="OpenInstancesDir_Click"/>
+                  <Button Grid.Column="4" Content="恢复默认" Style="{StaticResource FlatButton}"
+                          Margin="6,0,0,0" Padding="10,4"
+                          IsEnabled="{Binding IsCustomInstancesDir}"
+                          Click="ResetInstancesDir_Click"/>
+                </Grid>
+                <TextBlock Text="新建独立实例与在线/拖放导入的整合包（含下载缓存）都会安装到此目录，可放到 D / E 盘节省 C 盘空间。"
+                           FontSize="11.5" Foreground="{StaticResource TextMutedBrush}"
+                           Margin="118,0,0,8" TextWrapping="Wrap"/>
+
                 <Grid Margin="0,0,0,5">
                   <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="118"/>

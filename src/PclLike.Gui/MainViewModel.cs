@@ -36,7 +36,7 @@ public sealed class MainViewModel : ObservableObject
         _maxMemoryMb = Math.Clamp(Config.MaxMemoryMb, 512, 65536);
         ApplyBackgroundMode(Config.BackgroundMode);
         Accounts = new PclLike.Core.Login.AccountManager(gameRoot);
-        Store = new PclLike.Core.Storage.InstanceStore(gameRoot);
+        Store = new PclLike.Core.Storage.InstanceStore(gameRoot, Config.InstancesDir);
 
         // 下载源要在任何下载发生之前生效 —— 游戏文件（清单/版本 json/客户端 jar/
         // 类库/资源）全走它。默认 bmclapi：同一网络实测比官方快约 6 倍。
@@ -820,8 +820,56 @@ public sealed class MainViewModel : ObservableObject
     // 实例决定 --gameDir 指到哪儿，也就是存档 / Mod / 设置落在哪儿。
     // 界面上只有"当前实例"这一个概念：选了它，启动就按它来。
 
-    /// <summary>实例仓库（&lt;root&gt;/instances/&lt;id&gt;/instance.json）。</summary>
+    /// <summary>实例仓库（默认 &lt;root&gt;/instances，可由玩家在设置中自定义到任意磁盘目录）。</summary>
     public PclLike.Core.Storage.InstanceStore Store { get; }
+
+    /// <summary>当前生效的实例安装目录，供设置页展示。</summary>
+    public string InstancesDirDisplay => Store.InstancesDir;
+
+    /// <summary>是否正在使用自定义实例安装目录。</summary>
+    public bool IsCustomInstancesDir => !string.IsNullOrWhiteSpace(Config.InstancesDir);
+
+    /// <summary>
+    /// 切换实例安装目录（新实例、复制实例以及在线/拖放导入的整合包都会落到此目录）。
+    /// 传 null 或空字符串表示恢复默认目录。
+    /// </summary>
+    public bool SetInstancesDir(string? path)
+    {
+        try
+        {
+            string? target = null;
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                var full = Path.GetFullPath(path.Trim().Trim('"'));
+                Directory.CreateDirectory(full);
+                var def = Path.GetFullPath(Store.DefaultInstancesDir);
+                if (!string.Equals(
+                    full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                    def.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    target = full;
+                }
+            }
+
+            Config.InstancesDir = target;
+            Store.SetInstancesDir(target);
+            Persist();
+            RefreshInstances();
+            OnPropertyChanged(nameof(InstancesDirDisplay));
+            OnPropertyChanged(nameof(IsCustomInstancesDir));
+
+            AppendLog(LogKind.Ok, target is null
+                ? $"实例安装目录已恢复默认：{Store.InstancesDir}"
+                : $"实例安装目录已切换至：{Store.InstancesDir}（新建实例与整合包下载将自动存入此处）");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppendLog(LogKind.Error, $"无法设置实例安装目录：{ex.Message}");
+            return false;
+        }
+    }
 
     /// <summary>全部实例，按最近玩过的排前面。</summary>
     public ObservableCollection<PclLike.Core.Storage.GameInstance> Instances { get; }
@@ -1047,7 +1095,8 @@ public sealed class MainViewModel : ObservableObject
             }
             if (app is not null && !app.Dispatcher.CheckAccess()) app.Dispatcher.BeginInvoke(Sync);
             else Sync();
-        });
+        },
+        Store);
 
     private InstallerViewModel? _installer;
 

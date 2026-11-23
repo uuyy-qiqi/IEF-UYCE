@@ -1399,6 +1399,47 @@ public partial class MainWindow : Window
     /// 加 IsLoaded 判断是因为：绑定在窗口构造时就会把 SelectedValue 填进去，
     /// 那一下同样会触发 SelectionChanged —— 那时候窗口还没显示，没必要去探测。
     /// </summary>
+    private void BrowseInstancesDir_Click(object sender, RoutedEventArgs e)
+    {
+        var current = _vm.Store.InstancesDir;
+        var dlg = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "选择实例安装目录（新实例与整合包都将下载安装到此目录）",
+            InitialDirectory = Directory.Exists(current) ? current : "",
+            Multiselect = false,
+        };
+        if (dlg.ShowDialog(this) != true) return;
+        if (string.IsNullOrWhiteSpace(dlg.FolderName)) return;
+
+        if (!_vm.SetInstancesDir(dlg.FolderName))
+        {
+            MessageBox.Show(this,
+                "无法使用该目录，请确认路径有效且有写入权限。",
+                "设置实例安装目录失败",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+    }
+
+    private void OpenInstancesDir_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var dir = _vm.Store.InstancesDir;
+            Directory.CreateDirectory(dir);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", dir) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            _vm.AppendLog(LogKind.Warning, $"打开实例安装目录失败：{ex.Message}");
+        }
+    }
+
+    private void ResetInstancesDir_Click(object sender, RoutedEventArgs e)
+    {
+        _vm.SetInstancesDir(null);
+    }
+
     private void BackgroundMode_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (!IsLoaded) return;

@@ -160,12 +160,42 @@ public sealed class InstanceStore
     };
 
     private readonly string _root;
+    private string? _customInstancesDir;
 
-    public InstanceStore(string launcherRoot) => _root = launcherRoot;
+    public InstanceStore(string launcherRoot, string? customInstancesDir = null)
+    {
+        _root = launcherRoot;
+        SetInstancesDir(customInstancesDir);
+    }
 
     public string LauncherRoot => _root;
 
-    public string InstancesDir => Path.Combine(_root, "instances");
+    /// <summary>默认实例目录（&lt;启动器根&gt;/instances）。</summary>
+    public string DefaultInstancesDir => Path.Combine(_root, "instances");
+
+    /// <summary>当前生效的实例安装目录（若已自定义则返回自定义目录，否则返回默认目录）。</summary>
+    public string InstancesDir => string.IsNullOrWhiteSpace(_customInstancesDir)
+        ? DefaultInstancesDir
+        : _customInstancesDir!;
+
+    /// <summary>动态更新实例安装目录；传 null 或空字符串表示恢复默认。</summary>
+    public void SetInstancesDir(string? customInstancesDir)
+    {
+        if (string.IsNullOrWhiteSpace(customInstancesDir))
+        {
+            _customInstancesDir = null;
+            return;
+        }
+
+        var trimmed = Path.GetFullPath(customInstancesDir.Trim().Trim('"'));
+        var def = Path.GetFullPath(DefaultInstancesDir);
+        _customInstancesDir = string.Equals(
+            trimmed.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            def.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase)
+            ? null
+            : trimmed;
+    }
 
     public string DirFor(string id) => Path.Combine(InstancesDir, GameInstance.SanitizeId(id));
 
@@ -180,6 +210,8 @@ public sealed class InstanceStore
         foreach (var dir in Directory.EnumerateDirectories(InstancesDir))
         {
             var id = Path.GetFileName(dir);
+            // 跳过以点开头的内部缓存目录（如 .download-cache）
+            if (string.IsNullOrEmpty(id) || id.StartsWith('.')) continue;
             var inst = Load(id);
             if (inst is not null) result.Add(inst);
         }
