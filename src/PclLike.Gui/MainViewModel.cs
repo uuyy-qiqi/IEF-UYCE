@@ -31,6 +31,10 @@ public sealed class MainViewModel : ObservableObject
         _gameRoot = gameRoot;
         _service = new LaunchService(gameRoot);
         Config = ConfigStore.Load(gameRoot);
+        // 从持久化配置同步用户名与最大内存，防止首次 Persist() 将用户配置覆写回默认值 4096 MB
+        _username = ConfigStore.SanitizeUsername(Config.Username);
+        _maxMemoryMb = Math.Clamp(Config.MaxMemoryMb, 512, 65536);
+        ApplyBackgroundMode(Config.BackgroundMode);
         Accounts = new PclLike.Core.Login.AccountManager(gameRoot);
         Store = new PclLike.Core.Storage.InstanceStore(gameRoot);
 
@@ -248,7 +252,7 @@ public sealed class MainViewModel : ObservableObject
 
     /// <summary>启动页「当前实例」卡片上的一行内存摘要。</summary>
     public string MemorySummary =>
-        Config.MaxMemoryMb > 0 ? $"{Config.MaxMemoryMb / 1024.0:0.#} GB" : "自动配置";
+        MaxMemoryMb > 0 ? $"{MaxMemoryMb / 1024.0:0.#} GB" : "自动配置";
 
     // ─────────────────── 下载页顶部的"最新版本"卡片 ───────────────────
     //
@@ -424,15 +428,31 @@ public sealed class MainViewModel : ObservableObject
         get => _maxMemoryMb;
         set
         {
-            if (Set(ref _maxMemoryMb, value))
+            var clamped = Math.Clamp(value, 512, 65536);
+            if (Set(ref _maxMemoryMb, clamped))
             {
+                Config.MaxMemoryMb = clamped;
                 OnPropertyChanged(nameof(MemoryLabel));
+                OnPropertyChanged(nameof(MemorySummary));
                 OnPropertyChanged(nameof(MemoryBarWidth));
                 OnPropertyChanged(nameof(MemGameStar));
                 OnPropertyChanged(nameof(MemFreeStar));
                 OnPropertyChanged(nameof(MemoryUsedText));
                 OnPropertyChanged(nameof(RunSubtitle));
             }
+        }
+    }
+
+    /// <summary>额外 JVM 参数（供主界面「设置 → 高级启动选项」双向绑定）。</summary>
+    public string JvmArgs
+    {
+        get => Config.JvmArgs ?? "";
+        set
+        {
+            var normalized = string.IsNullOrWhiteSpace(value) ? null : value;
+            if (string.Equals(Config.JvmArgs, normalized, StringComparison.Ordinal)) return;
+            Config.JvmArgs = normalized;
+            OnPropertyChanged();
         }
     }
 
@@ -739,6 +759,37 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>实时切换启动器背景风格：纯白不透明（white）或半透明（transparent）。</summary>
+    public void ApplyBackgroundMode(string? mode = null)
+    {
+        var actual = string.Equals(mode ?? Config.BackgroundMode, "transparent", StringComparison.OrdinalIgnoreCase)
+            ? "transparent"
+            : "white";
+        Config.BackgroundMode = actual;
+
+        var res = Application.Current?.Resources;
+        if (res is null) return;
+
+        var transparent = actual == "transparent";
+        SetBrushColor(res, "BgBrush", transparent ? "#66F0F4FA" : "#FFF4F7FC");
+        SetBrushColor(res, "CardBrush", transparent ? "#C2FFFFFF" : "#FFFFFFFF");
+        SetBrushColor(res, "SurfaceBrush", transparent ? "#C2FFFFFF" : "#FFFFFFFF");
+        SetBrushColor(res, "RailBrush", transparent ? "#47FFFFFF" : "#FFFFFFFF");
+        SetBrushColor(res, "TopBarBrush", transparent ? "#CC1A6FD4" : "#FF1A6FD4");
+    }
+
+    private static void SetBrushColor(ResourceDictionary res, string key, string hex)
+    {
+        try
+        {
+            var color = (Color)ColorConverter.ConvertFromString(hex);
+            var brush = new SolidColorBrush(color);
+            brush.Freeze();
+            res[key] = brush;
+        }
+        catch { }
+    }
+
     /// <summary>刷新本机 Java 列表，并把最佳选择填进配置。</summary>
     public void RefreshJava()
     {
@@ -975,9 +1026,28 @@ public sealed class MainViewModel : ObservableObject
         AppendLog,
         GameRoot,
         // 第四个出口：安装进度也送一份给「任务管理」窗。
-        // 只喂顶栏（StatusMessage）的话，那个窗永远是 0.00%、一个步骤都没有
-        // —— 用户看到的就是「为什么导入没进度」。
-        Tasks.OnLog);
+        Tasks.OnLog,
+        // 在线下载整合包时自动新建独立实例并设为当前实例（与 PCL2 一致）
+        (name, mcVer) =>
+        {
+            var clean = SanitizeInstanceName(name, "下载的整合包");
+            var pin = !string.IsNullOrWhiteSpace(mcVer) ? mcVer : SelectedVersion?.Id;
+            return CreateInstance(clean, pin, isolated: true);
+        },
+        // 粘贴直链下载完成后走统一拖放自动识别导入引擎
+        DropFilesAsync,
+        // 装完刷新实例列表并同步当前版本
+        () =>
+        {
+            var app = Application.Current;
+            void Sync()
+            {
+                RefreshInstances();
+                SyncVersionToInstance();
+            }
+            if (app is not null && !app.Dispatcher.CheckAccess()) app.Dispatcher.BeginInvoke(Sync);
+            else Sync();
+        });
 
     private InstallerViewModel? _installer;
 
@@ -1055,8 +1125,14 @@ public sealed class MainViewModel : ObservableObject
 
         foreach (var path in paths)
         {
-            var c = PclLike.Core.Content.DroppedContentClassifier.Classify(path);
+            // 放到后台线程做分类与 rar/7z 转码，避免大整合包阻塞 UI 线程导致窗口无响应闪退
+            var c = await Task.Run(() => PclLike.Core.Content.DroppedContentClassifier.Classify(path));
 
+            // 下游统一使用分类器返回的 c.Path（rar/7z 会指向已转换好的临时 zip 路径）
+            var effectivePath = c.Path;
+
+            try
+            {
             switch (c.Kind)
             {
                 case PclLike.Core.Content.DroppedKind.ModPack:
@@ -1066,7 +1142,7 @@ public sealed class MainViewModel : ObservableObject
                     // 用包自己的名字最好（"Fabulously Optimized"）；没有才退回文件名，
                     // 而文件名会得到「pack abc006d7」那种谁也不想在实例列表里看到的东西。
                     // 开 zip 读清单只做一次（mc 版本和包名都从同一份清单来）。
-                    var plan = TryReadPackPlan(path);
+                    var plan = await Task.Run(() => TryReadPackPlan(effectivePath));
 
                     var baseName = plan?.Name;
                     if (string.IsNullOrWhiteSpace(baseName)) baseName = Path.GetFileNameWithoutExtension(c.FileName);
@@ -1094,7 +1170,7 @@ public sealed class MainViewModel : ObservableObject
 
                     RefreshInstances();
 
-                    var msg = await Content.InstallLocalPackAsync(path, inst);
+                    var msg = await Content.InstallLocalPackAsync(effectivePath, inst);
                     lines.Add($"{(msg.StartsWith("安装失败", StringComparison.Ordinal) ? "✗" : "✓")} "
                         + $"{c.FileName} → 新实例「{inst.Name}」\n{msg}");
                     break;
@@ -1110,7 +1186,7 @@ public sealed class MainViewModel : ObservableObject
                     PclLike.Core.Content.CursePackPlan plan;
                     try
                     {
-                        plan = PclLike.Core.Content.CursePack.ReadPlan(path);
+                        plan = await Task.Run(() => PclLike.Core.Content.CursePack.ReadPlan(effectivePath));
                     }
                     catch (Exception ex)
                     {
@@ -1242,7 +1318,7 @@ public sealed class MainViewModel : ObservableObject
                     }
 
                     var curseResult = await PclLike.Core.Content.CursePack.InstallAsync(
-                        path, plan, curseInst.GameDir, FetchCurseFile,
+                        effectivePath, plan, curseInst.GameDir, FetchCurseFile,
                         s =>
                         {
                             AppendLog(LogKind.Normal, s);
@@ -1283,7 +1359,7 @@ public sealed class MainViewModel : ObservableObject
                     PclLike.Core.Content.BundleLayout layout;
                     try
                     {
-                        layout = PclLike.Core.Content.BundleImporter.Inspect(path);
+                        layout = await Task.Run(() => PclLike.Core.Content.BundleImporter.Inspect(effectivePath));
                     }
                     catch (Exception ex)
                     {
@@ -1313,12 +1389,8 @@ public sealed class MainViewModel : ObservableObject
                     RefreshInstances();
 
                     var r = await PclLike.Core.Content.BundleImporter.ImportAsync(
-                        path, layout, bundleInst.GameDir, GameRoot,
+                        effectivePath, layout, bundleInst.GameDir, GameRoot,
                         s => AppendLog(LogKind.Normal, s));
-
-                    // 拖进来的可能是 .rar/.7z，分类时已经解成临时 zip 了 —— 用完删掉，
-                    // 不然解出来的那份会一直躺在 %LOCALAPPDATA%\PclLike\import-cache。
-                    PclLike.Core.Content.ArchiveNormalizer.Release(path);
 
                     if (!r.Ok)
                     {
@@ -1377,7 +1449,7 @@ public sealed class MainViewModel : ObservableObject
 
                     AppendLog(LogKind.Info, $"拖入{c.Describe}：{c.FileName} → 当前实例");
 
-                    var msg = await Content.InstallLocalContentAsync(path, kind);
+                    var msg = await Content.InstallLocalContentAsync(effectivePath, kind);
                     lines.Add($"{(msg.StartsWith("安装失败", StringComparison.Ordinal) ? "✗" : "✓")} {c.FileName}：{msg}");
                     break;
                 }
@@ -1386,7 +1458,7 @@ public sealed class MainViewModel : ObservableObject
                 {
                     AppendLog(LogKind.Info, $"拖入存档：{c.FileName} → 当前实例的 saves/");
 
-                    var msg = await Content.ImportLocalWorldAsync(path);
+                    var msg = await Content.ImportLocalWorldAsync(effectivePath);
                     lines.Add($"{(msg.StartsWith("导入失败", StringComparison.Ordinal) ? "✗" : "✓")} {c.FileName}：{msg}");
                     break;
                 }
@@ -1395,6 +1467,12 @@ public sealed class MainViewModel : ObservableObject
                     lines.Add($"– {c.FileName}：{c.Describe}");
                     AppendLog(LogKind.Warning, $"拖入的文件认不出来：{c.FileName} —— {c.Describe}");
                     break;
+            }
+            }
+            finally
+            {
+                // 若是 .rar/.7z 转换产生的临时 zip，导入结束或异常时统一清理，防止占满磁盘
+                PclLike.Core.Content.ArchiveNormalizer.Release(effectivePath);
             }
         }
 
@@ -2227,6 +2305,7 @@ public sealed class MainViewModel : ObservableObject
     }
 
     // 攒着待灌进 LogLines 的行。见 AppendLog 里的说明。
+    private const int MaxUiLogLines = 3000;
     private readonly List<LogLine> _pendingLines = new();
     private readonly object _pendingLock = new();
     private bool _flushScheduled;
@@ -2241,16 +2320,23 @@ public sealed class MainViewModel : ObservableObject
         // 线索就没了，排查"装到一半缺文件"这种问题只能靠外部探针去数磁盘文件。
         WriteLogFile(now, kind, line);
 
-        // 攒起来，回 UI 线程一次灌完。
-        //
-        // 原来每行都单独 BeginInvoke 一次，装原版资源时一口气几千行"下载资源"
-        // 就把消息队列塞满了 —— 界面线程其实活着（WM_NULL 测得到它），但点击
-        // 事件排在几百个集合更新后面，表现就是"页面什么都点不了"。攒成一批之后，
-        // 几千行也只占一次调度。
-        lock (_pendingLock) _pendingLines.Add(new LogLine(kind, now, line));
-
         var app = Application.Current;
         if (app is null) return;
+
+        var shouldSchedule = false;
+        lock (_pendingLock)
+        {
+            _pendingLines.Add(new LogLine(kind, now, line));
+            // 防止大整合包瞬间吐出数万行日志撑爆内存
+            if (_pendingLines.Count > MaxUiLogLines * 2)
+                _pendingLines.RemoveRange(0, _pendingLines.Count - MaxUiLogLines);
+
+            if (!_flushScheduled)
+            {
+                _flushScheduled = true;
+                shouldSchedule = true;
+            }
+        }
 
         if (app.Dispatcher.CheckAccess())
         {
@@ -2258,9 +2344,8 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
 
-        if (_flushScheduled) return;
-        _flushScheduled = true;
-        app.Dispatcher.BeginInvoke(() => FlushPendingLines());
+        if (shouldSchedule)
+            app.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () => FlushPendingLines());
     }
 
     /// <summary>把攒下的日志行一次性灌进 <see cref="LogLines"/>（只在 UI 线程跑）。</summary>
@@ -2276,23 +2361,44 @@ public sealed class MainViewModel : ObservableObject
             _pendingLines.Clear();
         }
 
+        // 若单批日志本身已超过上限，只保留最新部分灌入界面（完整日志已落盘）
+        if (batch.Count > MaxUiLogLines)
+        {
+            batch = batch.GetRange(batch.Count - MaxUiLogLines, MaxUiLogLines);
+            LogLines.Clear();
+        }
+        else if (LogLines.Count + batch.Count > MaxUiLogLines)
+        {
+            var overflow = LogLines.Count + batch.Count - MaxUiLogLines;
+            if (overflow >= LogLines.Count)
+            {
+                LogLines.Clear();
+            }
+            else
+            {
+                // 避免在超长集合上逐条触发大量 UI 重排，超过一半直接重建保留尾部
+                if (overflow > 500)
+                {
+                    var tail = LogLines.Skip(overflow).ToList();
+                    LogLines.Clear();
+                    foreach (var keep in tail) LogLines.Add(keep);
+                }
+                else
+                {
+                    for (var i = 0; i < overflow; i++) LogLines.RemoveAt(0);
+                }
+            }
+        }
+
+        var trackTasks = Tasks.IsBusy;
         foreach (var one in batch)
         {
             LogLines.Add(one);
 
-            // 顺手喂给「任务管理」窗（它靠认日志句式推进清单）。
-            //
-            // 为什么挂在这里而不是挂在窗口上：**所有**安装路径最后都会打日志，
-            // 而每个安装器各自通知一次是要靠纪律的 —— 今天就是整包那条路漏了，
-            // 表现成「导入没进度」。挂在这一处，以后新的安装器只要打日志就自动有进度。
-            //
-            // 必须在这（UI 线程）调：OnLog 会动 Steps 这个 ObservableCollection，
-            // 后台线程上动它、界面上又绑着，会直接抛跨线程异常把安装带走。
-            Tasks.OnLog(one.Text);
+            // 仅在存在活跃安装/导入任务时解析进度，避免游戏运行时的数万行日志白跑正则
+            if (trackTasks)
+                Tasks.OnLog(one.Text);
         }
-
-        // 防止长跑一晚上把内存吃满
-        while (LogLines.Count > 5000) LogLines.RemoveAt(0);
 
         FlushLogFile();
     }

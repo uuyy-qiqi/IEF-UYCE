@@ -800,12 +800,131 @@ public sealed class ModDownloader : IDisposable
         return false;
     }
 
-    /// <summary>按 Modrinth project id 直接拿候选（用于递归依赖，id 比 slug 快且准）。</summary>
+    /// <summary>按 Modrinth project id 或 slug 直接拿候选（支持资源包/光影/整合包的版本智能回退）。</summary>
     public async Task<ModDownloadCandidate?> FindModrinthByIdAsync(
-        string projectId, string mcVersion, string loader, CancellationToken ct = default)
+        string projectId,
+        string mcVersion,
+        string loader,
+        CancellationToken ct = default,
+        bool allowVersionFallback = false)
     {
         var project = await GetModrinthProjectAsync(projectId, ct);
-        return project is null ? null : await PickModrinthVersionAsync(project, mcVersion, loader, ct);
+        if (project is null) return null;
+
+        // 1) 精确匹配 MC 版本 + 加载器
+        var exact = await PickModrinthVersionAsync(project, mcVersion, loader, ct);
+        if (exact is not null) return exact;
+
+        if (!allowVersionFallback) return null;
+
+        // 2) 光影包/资源包/整合包常只标主次版本（如 1.21 而非 1.21.4）或通用版本：
+        //    先回退到 "1.x" 主次版本，再回退到不限 MC 版本取最新可用包。
+        var mc = (mcVersion ?? "").Trim();
+        var parts = mc.Split('.');
+        if (parts.Length >= 3)
+        {
+            var minor = $"{parts[0]}.{parts[1]}";
+            var byMinor = await PickModrinthVersionAsync(project, minor, loader, ct);
+            if (byMinor is not null) return byMinor;
+        }
+
+        if (mc.Length > 0)
+        {
+            var anyMc = await PickModrinthVersionAsync(project, "", loader, ct);
+            if (anyMc is not null) return anyMc;
+        }
+
+        if (!string.IsNullOrWhiteSpace(loader))
+            return await PickModrinthVersionAsync(project, "", "", ct);
+
+        return null;
+    }
+
+    /// <summary>
+    /// 直接下载任意 URL 到目标文件（支持直连/代理自动回退与静默超时重试）。
+    /// 用于用户粘贴的直链整合包、Mod、光影包或资源包。
+    /// </summary>
+    public async Task<(bool Ok, string? SuggestedFileName)> DownloadUrlAsync(
+        string url,
+        string targetPath,
+        IProgress<DownloadProgress>? progress = null,
+        CancellationToken ct = default)
+    {
+        var fileName = ExtractFileNameFromUrl(url) ?? "download.bin";
+        var cand = new ModDownloadCandidate
+        {
+            Platform = "direct",
+            ProjectId = "",
+            VersionId = "",
+            Name = fileName,
+            Version = "",
+            FileName = fileName,
+            DownloadUrl = url,
+        };
+
+        var ok = await DownloadWithRetryAsync(cand, targetPath, progress, maxAttempts: 2, ct);
+        return (ok, fileName);
+    }
+
+    /// <summary>带自动重试的下载：国内 CDN 偶发挂死节点时，重连一次通常即可恢复。</summary>
+    public async Task<bool> DownloadWithRetryAsync(
+        ModDownloadCandidate candidate,
+        string targetPath,
+        IProgress<DownloadProgress>? progress = null,
+        int maxAttempts = 2,
+        CancellationToken ct = default)
+    {
+        maxAttempts = Math.Max(1, maxAttempts);
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (await DownloadAsync(candidate, targetPath, progress, ct).ConfigureAwait(false))
+                return true;
+
+            if (attempt < maxAttempts)
+                await Task.Delay(TimeSpan.FromMilliseconds(800 * attempt), ct).ConfigureAwait(false);
+        }
+
+        return false;
+    }
+
+    /// <summary>尝试从 Modrinth 网页链接中提取 project slug/id（如 https://modrinth.com/shader/bsl-shaders）。</summary>
+    public static (string? ProjectType, string? Slug) TryParseModrinthUrl(string input)
+    {
+        if (!Uri.TryCreate(input.Trim(), UriKind.Absolute, out var uri)) return (null, null);
+        if (!uri.Host.EndsWith("modrinth.com", StringComparison.OrdinalIgnoreCase)) return (null, null);
+
+        var segs = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segs.Length < 2) return (null, null);
+
+        var type = segs[0].ToLowerInvariant() switch
+        {
+            "mod" or "mods" => "mod",
+            "modpack" or "modpacks" => "modpack",
+            "shader" or "shaders" => "shader",
+            "resourcepack" or "resourcepacks" => "resourcepack",
+            "datapack" or "datapacks" => "datapack",
+            "project" => "",
+            _ => null,
+        };
+
+        return type is null ? (null, null) : (type, Uri.UnescapeDataString(segs[1]));
+    }
+
+    private static string? ExtractFileNameFromUrl(string url)
+    {
+        try
+        {
+            var uri = new Uri(url);
+            var seg = uri.Segments.LastOrDefault()?.Trim('/');
+            if (string.IsNullOrWhiteSpace(seg)) return null;
+            var name = Path.GetFileName(Uri.UnescapeDataString(seg));
+            return string.IsNullOrWhiteSpace(name) ? null : name;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     // ────────────────────────────────────────────────────────────
@@ -827,11 +946,29 @@ public sealed class ModDownloader : IDisposable
     /// **不能**带加载器过滤 —— 它们没有加载器分类，带上会一个都搜不出来，
     /// 所以只有 mod 与 modpack 才追加加载器 facet。
     /// </summary>
+    /// <summary>分页搜索结果：包含当前页条目和 Modrinth 全站命中总数。</summary>
+    public sealed record ModSearchPage(IReadOnlyList<ModSearchResult> Hits, int TotalHits);
+
     public async Task<IReadOnlyList<ModSearchResult>> SearchModrinthListAsync(
         string query,
         string? mcVersion = null,
         string? loader = null,
         int limit = 20,
+        int offset = 0,
+        CancellationToken ct = default,
+        string projectType = "mod",
+        string? category = null)
+    {
+        var page = await SearchModrinthPageAsync(
+            query, mcVersion, loader, limit, offset, ct, projectType, category);
+        return page.Hits;
+    }
+
+    public async Task<ModSearchPage> SearchModrinthPageAsync(
+        string query,
+        string? mcVersion = null,
+        string? loader = null,
+        int limit = 40,
         int offset = 0,
         CancellationToken ct = default,
         string projectType = "mod",
@@ -844,16 +981,19 @@ public sealed class ModDownloader : IDisposable
         try
         {
             var facets = BuildModrinthFacets(mcVersion, loader, projectType, category);
+            // 空关键词浏览热门时按下载量倒序，搜索关键词时按相关性排序
+            var sortIndex = string.IsNullOrWhiteSpace(query) ? "downloads" : "relevance";
             var url = $"{ModrinthApi}/search?query={Uri.EscapeDataString(query ?? "")}" +
-                      $"&limit={limit}&offset={offset}&index=relevance" +
+                      $"&limit={limit}&offset={offset}&index={sortIndex}" +
                       (facets.Length > 0 ? $"&facets={facets}" : "");
 
             using var resp = await GetWithFallbackAsync(url, ct);
-            if (!resp.IsSuccessStatusCode) return [];
+            if (!resp.IsSuccessStatusCode) return new ModSearchPage([], 0);
 
             var json = await resp.Content.ReadFromJsonAsync<JsonObject>(ct);
+            var totalHits = json?["total_hits"]?.GetValue<int>() ?? 0;
             var hits = json?["hits"]?.AsArray();
-            if (hits is null || hits.Count == 0) return [];
+            if (hits is null || hits.Count == 0) return new ModSearchPage([], totalHits);
 
             var results = new List<ModSearchResult>();
             foreach (var h in hits)
@@ -863,6 +1003,11 @@ public sealed class ModDownloader : IDisposable
                 var slug = hit["slug"]?.GetValue<string>() ?? "";
                 var projectId = hit["project_id"]?.GetValue<string>() ?? slug;
                 if (string.IsNullOrWhiteSpace(projectId)) continue;
+
+                var allCats = (hit["categories"]?.AsArray() ?? [])
+                    .Select(x => x?.GetValue<string>() ?? "")
+                    .Where(x => x.Length > 0)
+                    .ToList();
 
                 results.Add(new ModSearchResult
                 {
@@ -874,19 +1019,34 @@ public sealed class ModDownloader : IDisposable
                     Downloads = hit["downloads"]?.GetValue<long>() ?? 0,
                     Follows = hit["follows"]?.GetValue<long>() ?? 0,
                     Author = hit["author"]?.GetValue<string>() ?? "",
-                    Loaders = (hit["categories"]?.AsArray() ?? [])
-                        .Select(x => x?.GetValue<string>() ?? "")
-                        .Where(IsLoaderName).ToList(),
+                    Loaders = allCats.Where(IsLoaderName).ToList(),
+                    Categories = allCats.Where(c => !IsLoaderName(c)).ToList(),
                     GameVersions = (hit["versions"]?.AsArray() ?? [])
-                        .Select(x => x?.GetValue<string>() ?? "").ToList(),
+                        .Select(x => x?.GetValue<string>() ?? "").Where(x => x.Length > 0).ToList(),
                     ProjectType = hit["project_type"]?.GetValue<string>() ?? "mod",
                 });
             }
 
-            return results;
+            return new ModSearchPage(results, totalHits);
         }
         catch (OperationCanceledException) { throw; }
-        catch { return []; }
+        catch { return new ModSearchPage([], 0); }
+    }
+
+    /// <summary>走内置直连/代理回退通道拉取远程图片字节（用于展示整合包/Mod/光影封面图）。</summary>
+    public async Task<byte[]?> FetchBytesAsync(string url, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return null;
+        try
+        {
+            using var resp = await GetWithFallbackAsync(url, ct).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode) return null;
+            return await resp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -1377,6 +1537,9 @@ public sealed record ModSearchResult
 
     /// <summary>从 categories 里挑出来的加载器名。</summary>
     public IReadOnlyList<string> Loaders { get; init; } = [];
+
+    /// <summary>项目主题分类（adventure / technology / magic / optimization 等，不含加载器名）。</summary>
+    public IReadOnlyList<string> Categories { get; init; } = [];
 
     /// <summary>支持的 MC 版本。</summary>
     public IReadOnlyList<string> GameVersions { get; init; } = [];

@@ -22,7 +22,8 @@ public sealed class GameLauncher
         IReadOnlyList<string> GameArgs,
         string MainClass,
         string WorkingDirectory,
-        IReadOnlyDictionary<string, string>? EnvironmentVariables = null);
+        IReadOnlyDictionary<string, string>? EnvironmentVariables = null,
+        int JavaMajorVersion = 0);
 
     /// <summary>
     /// 一次启动的句柄。
@@ -47,6 +48,17 @@ public sealed class GameLauncher
     private static string Quote(string s)
         => s.Contains(' ') && !s.StartsWith('"') ? $"\"{s}\"" : s;
 
+    /// <summary>按 Java @argfile 语法转义单个参数（处理反斜杠、双引号与空白）。</summary>
+    private static string EscapeArgFileToken(string s)
+    {
+        if (s.Length == 0) return "\"\"";
+        var needsQuotes = s.Any(c => char.IsWhiteSpace(c) || c is '"' or '\'' or '\\' or '#');
+        if (!needsQuotes) return s;
+
+        var escaped = s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        return $"\"{escaped}\"";
+    }
+
     public static LaunchHandle Start(LaunchRequest req, string logPath, Action<string>? onStdout = null,
         Action<string>? onStderr = null)
     {
@@ -65,17 +77,37 @@ public sealed class GameLauncher
             StandardErrorEncoding = Encoding.UTF8,
         };
 
-        foreach (var a in req.JvmArgs) psi.ArgumentList.Add(a);
+        Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+
+        var renderedCmd = RenderCommandLine(req);
+        // Windows CreateProcess 命令行硬上限为 32,767 字符。
+        // 大整合包或深层目录的 classpath 容易超限，Java 9+ 支持 @argfile 参数文件。
+        if (OperatingSystem.IsWindows() && renderedCmd.Length > 24000 && (req.JavaMajorVersion == 0 || req.JavaMajorVersion >= 9))
+        {
+            var argFile = Path.Combine(
+                Path.GetDirectoryName(logPath)!,
+                Path.GetFileNameWithoutExtension(logPath) + ".args");
+            var argLines = new StringBuilder();
+            foreach (var a in req.JvmArgs)
+                argLines.AppendLine(EscapeArgFileToken(a));
+            File.WriteAllText(argFile, argLines.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+            psi.ArgumentList.Add("@" + argFile);
+        }
+        else
+        {
+            foreach (var a in req.JvmArgs) psi.ArgumentList.Add(a);
+        }
+
         psi.ArgumentList.Add(req.MainClass);
         foreach (var a in req.GameArgs) psi.ArgumentList.Add(a);
 
         if (req.EnvironmentVariables is not null)
             foreach (var (k, v) in req.EnvironmentVariables) psi.Environment[k] = v;
 
-        Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
         var logStream = new StreamWriter(logPath, append: false, Encoding.UTF8) { AutoFlush = true };
         logStream.WriteLine($"# {DateTimeOffset.Now:O}");
-        logStream.WriteLine($"# {RenderCommandLine(req)}");
+        logStream.WriteLine($"# {renderedCmd}");
         logStream.WriteLine();
 
         var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };

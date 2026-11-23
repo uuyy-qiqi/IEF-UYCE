@@ -17,7 +17,6 @@ namespace PclLike.Gui
     public partial class TasksWindow : Window
     {
         private readonly MainViewModel _vm;
-        private bool _hooked;
 
         public TasksWindow(MainViewModel vm)
         {
@@ -25,40 +24,6 @@ namespace PclLike.Gui
 
             _vm = vm;
             DataContext = vm.Tasks;
-
-            Loaded += OnLoaded;
-            Closed += OnClosed;
-        }
-
-        private void OnLoaded(object sender, RoutedEventArgs e)
-        {
-            // 先把已经攒下的日志过一遍（窗口晚开时不会漏掉前面的步骤）
-            foreach (var line in _vm.LogLines) _vm.Tasks.OnLog(line.Text);
-
-            if (!_hooked)
-            {
-                _vm.LogLines.CollectionChanged += OnLogLinesChanged;
-                _hooked = true;
-            }
-        }
-
-        private void OnClosed(object? sender, EventArgs e)
-        {
-            if (_hooked)
-            {
-                _vm.LogLines.CollectionChanged -= OnLogLinesChanged;
-                _hooked = false;
-            }
-        }
-
-        private void OnLogLinesChanged(object? sender, NotifyCollectionChangedEventArgs e)
-        {
-            if (e.NewItems is null) return;
-
-            foreach (var item in e.NewItems)
-            {
-                if (item is LogLine line) _vm.Tasks.OnLog(line.Text);
-            }
         }
 
         // ── 窗口外壳（和 LogWindow 一致的那套）────────────────────────────

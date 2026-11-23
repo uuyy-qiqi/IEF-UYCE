@@ -107,6 +107,17 @@ public static class ArgumentBuilder
             $"-Xms{cfg.MinMemoryMb}M",
         };
 
+        // 为大型整合包补充稳定的 G1GC 与基础容错参数（若用户未在额外参数中自定义 GC）
+        var hasCustomGc = cfg.ExtraJvmArgs.Any(a =>
+            a.StartsWith("-XX:+Use", StringComparison.OrdinalIgnoreCase) &&
+            a.EndsWith("GC", StringComparison.OrdinalIgnoreCase));
+        if (!hasCustomGc)
+        {
+            result.Add("-XX:+UseG1GC");
+            result.Add("-XX:-UseAdaptiveSizePolicy");
+            result.Add("-XX:-OmitStackTraceInFastThrow");
+        }
+
         if (OperatingSystem.IsWindows())
         {
             // 官方 launcher 会加这几条，避免中文路径/编码问题
@@ -245,8 +256,10 @@ public static class ArgumentBuilder
 
                 case JsonNode node when node is JsonObject obj:
                 {
-                    var v = ExpandObject(obj, tokens, features);
-                    if (v.Length > 0) yield return v;
+                    foreach (var v in ExpandObject(obj, tokens, features))
+                    {
+                        if (v.Length > 0) yield return v;
+                    }
                     break;
                 }
 
@@ -259,53 +272,54 @@ public static class ArgumentBuilder
 
                 case System.Text.Json.JsonElement el when el.ValueKind == System.Text.Json.JsonValueKind.Object:
                 {
-                    var v = ExpandJsonElement(el, tokens, features);
-                    if (v.Length > 0) yield return v;
+                    foreach (var v in ExpandJsonElement(el, tokens, features))
+                    {
+                        if (v.Length > 0) yield return v;
+                    }
                     break;
                 }
             }
         }
     }
 
-    /// <summary>展开 {"rules":[...],"value":"x" 或 ["x","y"]}。注意 value 可能展开成空串，需要过滤。</summary>
-    private static string ExpandObject(JsonObject obj, IReadOnlyDictionary<string, string> tokens,
+    /// <summary>展开 {"rules":[...],"value":"x" 或 ["x","y"]}。数组形式逐项返回，避免用空格合并成单个错误参数。</summary>
+    private static IEnumerable<string> ExpandObject(JsonObject obj, IReadOnlyDictionary<string, string> tokens,
         IReadOnlyDictionary<string, bool>? features)
     {
         var rules = ParseRules(obj["rules"]);
-        if (!RuleEvaluator.IsAllowed(rules, features)) return "";
+        if (!RuleEvaluator.IsAllowed(rules, features)) yield break;
 
         var value = obj["value"];
-        if (value is null) return "";
+        if (value is null) yield break;
 
         if (value is JsonArray arr)
         {
-            // 数组形式的 value：可能含条件元素，递归展开后拼接
-            var parts = new List<string>();
             foreach (var v in arr)
             {
                 if (v is JsonObject inner)
                 {
-                    var s = ExpandObject(inner, tokens, features);
-                    if (!string.IsNullOrEmpty(s)) parts.Add(s);
+                    foreach (var s in ExpandObject(inner, tokens, features))
+                        if (!string.IsNullOrEmpty(s)) yield return s;
                 }
                 else
                 {
                     var s = Substitute(v?.GetValue<string>() ?? "", tokens);
-                    if (!string.IsNullOrEmpty(s)) parts.Add(s);
+                    if (!string.IsNullOrEmpty(s)) yield return s;
                 }
             }
-            return string.Join(" ", parts);
+            yield break;
         }
 
-        return Substitute(value.GetValue<string>(), tokens);
+        var single = Substitute(value.GetValue<string>(), tokens);
+        if (!string.IsNullOrEmpty(single)) yield return single;
     }
 
-    private static string ExpandJsonElement(System.Text.Json.JsonElement el,
+    private static IEnumerable<string> ExpandJsonElement(System.Text.Json.JsonElement el,
         IReadOnlyDictionary<string, string> tokens,
         IReadOnlyDictionary<string, bool>? features)
     {
         var node = JsonNode.Parse(el.GetRawText());
-        return node is JsonObject o ? ExpandObject(o, tokens, features) : "";
+        return node is JsonObject o ? ExpandObject(o, tokens, features) : [];
     }
 
     private static List<Rule>? ParseRules(JsonNode? node)

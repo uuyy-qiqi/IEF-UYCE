@@ -70,6 +70,9 @@ public sealed class LauncherConfig
     /// <summary>窗口大小：default / maximized。</summary>
     [JsonPropertyName("windowSize")] public string WindowSize { get; set; } = "default";
 
+    /// <summary>窗口背景模式：white（纯白不透明，默认）/ transparent（半透明）。</summary>
+    [JsonPropertyName("backgroundMode")] public string BackgroundMode { get; set; } = "white";
+
     /// <summary>正版登录方式：devicecode（设备代码流）/ browser（浏览器跳转）。</summary>
     [JsonPropertyName("authMode")] public string AuthMode { get; set; } = "devicecode";
 

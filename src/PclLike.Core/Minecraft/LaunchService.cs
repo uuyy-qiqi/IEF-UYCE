@@ -266,7 +266,7 @@ public sealed class LaunchService : IDisposable
             MinMemoryMb = options.MinMemoryMb,
             ServerAddress = options.ServerAddress,
             ServerPort = options.ServerPort,
-            ExtraJvmArgs = options.ExtraJvmArgs,
+            ExtraJvmArgs = extraJvm,
             ExtraGameArgs = options.ExtraGameArgs,
             VersionType = version.Type ?? "release",
         };
@@ -274,15 +274,13 @@ public sealed class LaunchService : IDisposable
         var jvmArgs = ArgumentBuilder.BuildJvmArgs(version, cfg);
         var gameArgs = ArgumentBuilder.BuildGameArgs(version, cfg);
 
-        // 实例自定义 JVM 参数追加在参数生成之后，让它能覆盖前面的默认值
-        if (extraJvm.Count > 0) jvmArgs = [.. jvmArgs, .. extraJvm];
-
         var request = new GameLauncher.LaunchRequest(
             JavaExecutable: chosen.Path,
             JvmArgs: jvmArgs,
             GameArgs: gameArgs,
             MainClass: version.MainClass ?? installed.MainClass,
-            WorkingDirectory: gameDir);
+            WorkingDirectory: gameDir,
+            JavaMajorVersion: chosen.MajorVersion);
 
         // 5. 启动
         progress?.Report(("启动游戏", 0, 1));

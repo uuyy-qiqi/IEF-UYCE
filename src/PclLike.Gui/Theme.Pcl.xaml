@@ -9,12 +9,9 @@
          主色        亮蓝，用在顶栏、选中态、主按钮
          描边        很淡的蓝灰，只用来分隔       ════════════════════════════════════════════════════════════ -->
 
-  <!-- 底色带 alpha 是故意的：窗口后面由 DWM 画一层亚克力模糊
-       （见 WindowBackdrop.cs），留出透明度那层模糊才看得见。
-       透明度不能给太狠 —— 字要始终压得住背景，所以窗口底 40%、卡片 76%，
-       越"上层"的东西越不透明，文字永远不会糊。 -->
-  <Color x:Key="BgColor">#66F0F4FA</Color>
-  <Color x:Key="CardColor">#C2FFFFFF</Color>
+  <!-- 默认采用纯白不透明底色，确保文字清晰易读；用户可在「设置 → 个性化」随时切换为半透明 -->
+  <Color x:Key="BgColor">#FFF4F7FC</Color>
+  <Color x:Key="CardColor">#FFFFFFFF</Color>
   <Color x:Key="PrimaryColor">#1A6FD4</Color>
   <Color x:Key="PrimaryHiColor">#4A9BE8</Color>
   <Color x:Key="PrimaryLoColor">#14589F</Color>
@@ -43,12 +40,12 @@
   <SolidColorBrush x:Key="SuccessBrush" Color="{StaticResource SuccessColor}"/>
   <SolidColorBrush x:Key="WarnBrush" Color="{StaticResource WarnColor}"/>
 
-  <!-- 左栏：比卡片更透一点，让侧栏和内容区在毛玻璃上能分得出来 -->
-  <Color x:Key="RailColor">#47FFFFFF</Color>
+  <!-- 左栏：默认纯白不透明，切换半透明模式时由 ApplyBackgroundMode 动态替换 -->
+  <Color x:Key="RailColor">#FFFFFFFF</Color>
   <SolidColorBrush x:Key="RailBrush" Color="{StaticResource RailColor}"/>
 
-  <!-- 顶栏：主色留一点点透明，毛玻璃那层模糊能微微透上来 -->
-  <Color x:Key="TopBarColor">#CC1A6FD4</Color>
+  <!-- 顶栏：默认不透明亮蓝，切换半透明模式时由 ApplyBackgroundMode 动态替换 -->
+  <Color x:Key="TopBarColor">#FF1A6FD4</Color>
   <SolidColorBrush x:Key="TopBarBrush" Color="{StaticResource TopBarColor}"/>
 
   <!-- 兼容旧键名，免得改一处漏一处 -->
@@ -120,7 +117,7 @@
   <!-- ════════════════════════════════════════════════════════════
        卡片：白底 + 1px 淡描边 + 6px 圆角，是整页的基本单元       ════════════════════════════════════════════════════════════ -->
   <Style x:Key="Card" TargetType="Border">
-    <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+    <Setter Property="Background" Value="{DynamicResource CardBrush}"/>
     <Setter Property="BorderBrush" Value="{StaticResource BorderBrush2}"/>
     <Setter Property="BorderThickness" Value="1"/>
     <Setter Property="CornerRadius" Value="6"/>
@@ -130,7 +127,7 @@
 
   <!-- 可点击的卡片列表项 -->
   <Style x:Key="CardRow" TargetType="Border">
-    <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+    <Setter Property="Background" Value="{DynamicResource CardBrush}"/>
     <Setter Property="BorderBrush" Value="{StaticResource BorderBrush2}"/>
     <Setter Property="BorderThickness" Value="1"/>
     <Setter Property="CornerRadius" Value="6"/>
@@ -268,7 +265,7 @@
     <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
     <Setter Property="FontSize" Value="12.5"/>
     <Setter Property="Foreground" Value="{StaticResource TextSoftBrush}"/>
-    <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+    <Setter Property="Background" Value="{DynamicResource CardBrush}"/>
     <Setter Property="Cursor" Value="Hand"/>
     <Setter Property="Padding" Value="12,7"/>
     <Setter Property="Template">
@@ -335,7 +332,7 @@
     <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
     <Setter Property="FontSize" Value="13"/>
     <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-    <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+    <Setter Property="Background" Value="{DynamicResource CardBrush}"/>
     <Setter Property="BorderBrush" Value="{StaticResource BorderBrush2}"/>
     <Setter Property="BorderThickness" Value="1"/>
     <Setter Property="Padding" Value="10,7"/>
@@ -368,7 +365,7 @@
     <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
     <Setter Property="FontSize" Value="13"/>
     <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-    <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+    <Setter Property="Background" Value="{DynamicResource CardBrush}"/>
     <Setter Property="BorderBrush" Value="{StaticResource BorderBrush2}"/>
     <Setter Property="Padding" Value="10,7"/>
     <Setter Property="MinHeight" Value="34"/>
@@ -443,7 +440,7 @@
     <Setter Property="FontSize" Value="13.5"/>
     <Setter Property="FontWeight" Value="SemiBold"/>
     <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
-    <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+    <Setter Property="Background" Value="{DynamicResource CardBrush}"/>
     <Setter Property="Cursor" Value="Hand"/>
     <Setter Property="Template">
       <Setter.Value>
@@ -516,7 +513,7 @@
     <Setter Property="Template">
       <Setter.Value>
         <ControlTemplate TargetType="Button">
-          <Border x:Name="Bd" Background="{StaticResource CardBrush}"
+          <Border x:Name="Bd" Background="{DynamicResource CardBrush}"
                   BorderBrush="{Binding RunButtonBrush}"
                   BorderThickness="1.5" CornerRadius="6" Padding="14,9">
             <StackPanel VerticalAlignment="Center">

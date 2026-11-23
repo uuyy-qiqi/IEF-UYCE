@@ -62,6 +62,7 @@ public partial class SettingsWindow : Window
         // 同步回主界面绑定的属性
         _vm.Username = cfg.Username;
         _vm.MaxMemoryMb = cfg.MaxMemoryMb;
+        _vm.JvmArgs = cfg.JvmArgs ?? "";
         _vm.RefreshJava();
 
         _vm.AppendLog(LogKind.Info, $"设置已保存（玩家名 {cfg.Username}，内存 {cfg.MaxMemoryMb} MB）");

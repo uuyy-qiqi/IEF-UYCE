@@ -1,6 +1,9 @@
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Text.RegularExpressions;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using PclLike.Core.Content;
 using PclLike.Core.Mods;
 using PclLike.Core.Storage;
@@ -53,6 +56,15 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
     /// </summary>
     private readonly Action<string>? _onProgress;
 
+    /// <summary>在线下载整合包时，自动新建独立实例并选中的回调（由 MainViewModel 提供）。</summary>
+    private readonly Func<string, string?, GameInstance?>? _createPackInstance;
+
+    /// <summary>下载任意直链文件后转交拖放分类导入引擎的回调（由 MainViewModel 提供）。</summary>
+    private readonly Func<IReadOnlyList<string>, Task<string>>? _importDownloadedFiles;
+
+    /// <summary>实例或版本信息变化后通知主界面刷新的回调。</summary>
+    private readonly Action? _onInstanceUpdated;
+
     private readonly ModDownloader _downloader = new();
     private readonly FavoritesStore _favorites;
     private readonly string _tempDir;
@@ -64,11 +76,17 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
         Func<GameInstance> instance,
         Action<LogKind, string> log,
         string launcherRoot,
-        Action<string>? onProgress = null)
+        Action<string>? onProgress = null,
+        Func<string, string?, GameInstance?>? createPackInstance = null,
+        Func<IReadOnlyList<string>, Task<string>>? importDownloadedFiles = null,
+        Action? onInstanceUpdated = null)
     {
         _instance = instance;
         _log = log;
         _onProgress = onProgress;
+        _createPackInstance = createPackInstance;
+        _importDownloadedFiles = importDownloadedFiles;
+        _onInstanceUpdated = onInstanceUpdated;
         _favorites = new FavoritesStore(launcherRoot);
         _launcherRoot = launcherRoot;
         _tempDir = Path.Combine(Path.GetTempPath(), "pcllike-content");
@@ -171,7 +189,7 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
                 "mod", "", (ContentKind?)ContentKind.Mod, true),
 
             ContentTab.ModPack => ("整合包",
-                "整合包会下载它自带的一整份文件清单（几十到几百个），装进当前实例的根目录。装之前建议先新建一个空实例，别覆盖正在玩的那个。",
+                "点击「安装」会自动新建一个独立实例，下载全部 Mod 与配置并补齐对应加载器，装完即可直接启动；也支持在搜索框粘贴 Modrinth 或直链下载。",
                 "modpack", "", (ContentKind?)ContentKind.ModPack, true),
 
             ContentTab.Datapack => ("数据包",
@@ -280,6 +298,21 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
     /// </summary>
     public void SyncFromInstance()
     {
+        // 整合包在线安装会自动新建独立实例，默认不应被当前实例的版本/加载器锁死；
+        // 否则当前在 1.21.4 时会过滤掉 1.20.1 / 1.21.1 等绝大多数热门大整合包。
+        if (Tab == ContentTab.ModPack)
+        {
+            if (McVersion == _lastGuess)
+            {
+                _lastGuess = "";
+                McVersion = "";
+            }
+            Loader = "";
+            OnPropertyChanged(nameof(InstanceText));
+            OnPropertyChanged(nameof(SearchFilterText));
+            return;
+        }
+
         var inst = _instance();
 
         // 猜出来的值只在"用户没用自己改过"时才写回去：
@@ -342,13 +375,26 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
     //  搜索结果
     // ══════════════════════════════════════════════════════════
 
+    private const int PageSize = 40;
+    private int _totalHits;
+    private int _nextOffset;
+    private static readonly ConcurrentDictionary<string, ImageSource> IconCache = new(StringComparer.OrdinalIgnoreCase);
+
     public ObservableCollection<ContentRow> Results { get; } = [];
 
     public ObservableCollection<ContentRow> Favorites { get; } = [];
 
     public bool HasResults => Results.Count > 0;
 
-    public string ResultsCountText => Results.Count > 0 ? $"{Results.Count} 条结果" : "";
+    public bool HasMoreResults => IsOnlineTab && Results.Count > 0 && Results.Count < _totalHits;
+
+    public string LoadMoreText => HasMoreResults
+        ? $"加载更多（已显示 {Results.Count} / 共 {_totalHits:N0} 个）"
+        : $"已显示全部 {Results.Count} 个结果";
+
+    public string ResultsCountText => Results.Count > 0
+        ? (_totalHits > Results.Count ? $"已显示 {Results.Count} / 共 {_totalHits:N0} 条" : $"{Results.Count} 条结果")
+        : "";
 
     // ── 线程 ──
     //
@@ -367,52 +413,84 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
         else _ui.Invoke(action);
     }
 
-    /// <summary>搜索。空关键词也发请求 —— Modrinth 会返回最热的那些，等于"逛一逛"。</summary>
+    /// <summary>搜索。空关键词也发请求 —— Modrinth 会返回最热的那些；若输入了 http(s) 链接则直接下载并自动导入。</summary>
     public async Task SearchAsync()
     {
         if (!IsOnlineTab || IsBusy) return;
 
+        var rawQuery = SearchQuery.Trim();
+        if (rawQuery.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            rawQuery.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            await InstallFromUrlAsync(rawQuery);
+            return;
+        }
+
+        _totalHits = 0;
+        _nextOffset = 0;
+        await FetchPageAsync(append: false);
+    }
+
+    /// <summary>加载下一页搜索结果。</summary>
+    public async Task LoadMoreAsync()
+    {
+        if (!IsOnlineTab || IsBusy || !HasMoreResults) return;
+        await FetchPageAsync(append: true);
+    }
+
+    private async Task FetchPageAsync(bool append)
+    {
+        var rawQuery = SearchQuery.Trim();
         IsBusy = true;
-        StatusMessage = SearchQuery.Trim().Length > 0
-            ? $"正在搜索「{SearchQuery.Trim()}」…"
-            : "正在列出最热门的项目…";
+        StatusMessage = append
+            ? $"正在加载更多{Title}…"
+            : (rawQuery.Length > 0 ? $"正在搜索「{rawQuery}」…" : $"正在列出最热门的{Title}…");
 
         try
         {
             var mc = McVersion.Trim();
             var loader = NeedsLoader && Loader.Trim().Length > 0 ? Loader.Trim() : null;
+            var offset = append ? _nextOffset : 0;
 
-            var list = await _downloader.SearchModrinthListAsync(
-                SearchQuery.Trim(),
+            var page = await _downloader.SearchModrinthPageAsync(
+                rawQuery,
                 mc.Length > 0 ? mc : null,
                 loader,
-                limit: 30,
-                offset: 0,
+                limit: PageSize,
+                offset: offset,
                 ct: _cts.Token,
                 projectType: ProjectType,
                 category: Category.Length > 0 ? Category : null);
 
-            // 类型标签由栏目给。数据包那一栏尤其需要 —— Modrinth 把数据包的
-            // project_type 一律报成 mod，不覆盖的话整屏都写着「Mod」。
-            var rows = list.Select(r => ContentRow.FromSearch(r, _favorites.Has(r.ProjectId), Title)).ToList();
+            _totalHits = page.TotalHits;
+            _nextOffset = offset + page.Hits.Count;
+
+            var rows = page.Hits
+                .Select(r => ContentRow.FromSearch(r, _favorites.Has(r.ProjectId), Title))
+                .ToList();
 
             OnUi(() =>
             {
-                Results.Clear();
+                if (!append) Results.Clear();
                 foreach (var row in rows) Results.Add(row);
             });
 
-            // 数据包栏的"这个实例还没有存档"必须一直挂着：它是"装了也没地方放"
-            // 的解释，被下面那句"共 N 条"盖掉就等于没说过。
+            // 后台并发加载封面图（不阻塞列表渲染，失败静默退回占位图标）
+            _ = LoadIconsAsync(rows);
+
             var warn = NeedsWorldPick && Worlds.Count == 0
                 ? "⚠ 这个实例还没有存档，数据包没地方装 —— 进去建一个世界再回来。\n"
                 : "";
 
-            StatusMessage = warn + (rows.Count == 0
-                ? "一条都没搜到。换个关键词，或者把游戏版本/加载器放宽到不限试试。"
-                : $"共 {Results.Count} 条。点「安装」装进当前实例。");
+            var actionTip = Tab == ContentTab.ModPack
+                ? "点「安装」会自动新建独立实例并装好加载器。"
+                : "点「安装」直接导入当前实例。";
 
-            _log(LogKind.Info, $"{Title} 搜索「{SearchQuery.Trim()}」→ {Results.Count} 条");
+            StatusMessage = warn + (Results.Count == 0
+                ? "一条都没搜到。换个关键词，或者把游戏版本/加载器清空（不限）试试。"
+                : $"已显示 {Results.Count} / 共 {_totalHits:N0} 条{Title}。{actionTip}");
+
+            _log(LogKind.Info, $"{Title} 搜索「{rawQuery}」→ 已显示 {Results.Count}/{_totalHits} 条");
         }
         catch (OperationCanceledException)
         {
@@ -426,7 +504,68 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
         {
             IsBusy = false;
             OnPropertyChanged(nameof(HasResults));
+            OnPropertyChanged(nameof(HasMoreResults));
+            OnPropertyChanged(nameof(LoadMoreText));
             OnPropertyChanged(nameof(ResultsCountText));
+        }
+    }
+
+    /// <summary>后台限流拉取封面图并缓存（走代理回退通道，避免 WPF 原生 Image 不走代理而空白）。</summary>
+    private async Task LoadIconsAsync(IReadOnlyList<ContentRow> rows)
+    {
+        using var gate = new SemaphoreSlim(6, 6);
+        var tasks = rows.Where(r => !string.IsNullOrWhiteSpace(r.IconUrl)).Select(async row =>
+        {
+            var url = row.IconUrl!;
+            if (IconCache.TryGetValue(url, out var cached))
+            {
+                OnUi(() => row.SetIcon(cached));
+                return;
+            }
+
+            await gate.WaitAsync(_cts.Token).ConfigureAwait(false);
+            try
+            {
+                if (_cts.IsCancellationRequested) return;
+                var bytes = await _downloader.FetchBytesAsync(url, _cts.Token).ConfigureAwait(false);
+                if (bytes is null || bytes.Length == 0) return;
+
+                var bmp = DecodeFrozenBitmap(bytes);
+                if (bmp is null) return;
+
+                IconCache[url] = bmp;
+                OnUi(() => row.SetIcon(bmp));
+            }
+            catch
+            {
+                // 单张封面加载失败不影响列表，保留默认占位图
+            }
+            finally
+            {
+                gate.Release();
+            }
+        });
+
+        try { await Task.WhenAll(tasks).ConfigureAwait(false); } catch { }
+    }
+
+    private static ImageSource? DecodeFrozenBitmap(byte[] bytes)
+    {
+        try
+        {
+            using var ms = new MemoryStream(bytes);
+            var bmp = new BitmapImage();
+            bmp.BeginInit();
+            bmp.CacheOption = BitmapCacheOption.OnLoad;
+            bmp.DecodePixelWidth = 96;
+            bmp.StreamSource = ms;
+            bmp.EndInit();
+            bmp.Freeze();
+            return bmp;
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -488,18 +627,26 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
         ModPackPlan? plan = null;
 
         IsBusy = true;
+        row.SetInstalling(true, "解析版本…");
 
         try
         {
             StatusMessage = $"正在给「{row.Title}」找一个能用的版本…";
 
-            var cand = await _downloader.FindModrinthByIdAsync(row.ProjectId, mc, loader, _cts.Token);
+            // 光影包、资源包、整合包和数据包允许版本智能回退（例如 1.21.4 回退到 1.21 或通用版），
+            // 避免因作者未勾选最新小版本而无法下载。
+            var allowFallback = kind is ContentKind.Shader or ContentKind.ResourcePack
+                                     or ContentKind.ModPack or ContentKind.Datapack;
+
+            var cand = await _downloader.FindModrinthByIdAsync(
+                row.ProjectId, mc, loader, _cts.Token, allowVersionFallback: allowFallback);
 
             if (cand is null)
             {
                 StatusMessage = mc.Length > 0
                     ? $"「{row.Title}」没有匹配 {mc}{(loader.Length > 0 ? " / " + loader : "")} 的版本。"
                     : $"「{row.Title}」没有可下载的版本。";
+                row.SetInstalling(false, "版本不匹配");
                 return;
             }
 
@@ -507,83 +654,126 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
             tmp = Path.Combine(_tempDir, Guid.NewGuid().ToString("N") + (ext.Length > 0 ? ext : ".jar"));
             Directory.CreateDirectory(_tempDir);
 
-            var progress = new Progress<DownloadProgress>(p => StatusMessage = $"正在下载 {p.Name}：{p.Text}");
+            var progress = new Progress<DownloadProgress>(p =>
+            {
+                StatusMessage = $"正在下载 {p.Name}：{p.Text}";
+                _onProgress?.Invoke($"正在下载 {p.Name} ({(int)(p.Fraction * 100)}/100)");
+            });
 
+            row.SetInstalling(true, "下载中…");
             StatusMessage = $"正在下载 {cand.FileName}…";
-            if (!await _downloader.DownloadAsync(cand, tmp, progress, _cts.Token))
+            if (!await _downloader.DownloadWithRetryAsync(cand, tmp, progress, maxAttempts: 2, _cts.Token))
             {
                 StatusMessage = $"下载 {cand.FileName} 失败 —— 网络问题的话过一会儿再试一次。";
+                row.SetInstalling(false, "重试安装");
                 return;
             }
 
             var size = new FileInfo(tmp).Length;
 
             InstallResult result;
+            var targetInst = inst;
 
             if (kind == ContentKind.ModPack)
             {
-                // 清单先读出来留着：安装函数内部读的是同一个 zip，但那个临时文件
-                // 在 finally 里就被删了，装完之后再想读就得重新下载一遍。
-                plan = ModPackInstaller.ReadPlan(tmp);
+                row.SetInstalling(true, "装包中…");
+                plan = await Task.Run(() => ModPackInstaller.ReadPlan(tmp), _cts.Token);
 
-                // ★ 版本对不上就别装（真实事故：1.21.1 的包被装进 1.20.1 的实例，
-                //   208 个 Mod + 1123 个配置覆盖进去，界面上还写着"安装成功"）。
-                //   拦在这里，一个文件都还没落盘。
-                var mismatch = VersionMismatchReason(plan?.McVersion, inst);
-                if (mismatch is not null)
+                // 像 PCL2 一样：在线下载整合包时优先自动新建独立实例，绝不覆盖玩家当前正在玩的实例，
+                // 也不会因为当前实例 MC 版本不同而拦死下载。
+                if (_createPackInstance is not null)
                 {
-                    _log(LogKind.Error, $"{Title}：「{row.Title}」{mismatch}");
-                    StatusMessage = mismatch;
-                    return;
+                    var packName = !string.IsNullOrWhiteSpace(plan?.Name) ? plan!.Name : row.Title;
+                    var created = _createPackInstance(packName, plan?.McVersion);
+                    if (created is not null)
+                    {
+                        targetInst = created;
+                        _log(LogKind.Info, $"{Title}：已为整合包「{packName}」新建独立实例「{created.Name}」");
+                    }
                 }
+                else
+                {
+                    // 无新建实例回调时（例如命令行探针），沿用原版本一致性检查
+                    var mismatch = VersionMismatchReason(plan?.McVersion, targetInst);
+                    if (mismatch is not null)
+                    {
+                        _log(LogKind.Error, $"{Title}：「{row.Title}」{mismatch}");
+                        StatusMessage = mismatch;
+                        row.SetInstalling(false, "版本不匹配");
+                        return;
+                    }
+                }
+
+                var packProgress = new Progress<string>(s =>
+                {
+                    StatusMessage = s;
+                    _onProgress?.Invoke(s);
+                });
 
                 result = await ModPackInstaller.InstallAsync(
                     tmp,
-                    inst,
+                    targetInst,
                     FetchPackFileAsync,
-                    new Progress<string>(s => StatusMessage = s),
+                    packProgress,
                     _cts.Token);
             }
             else
             {
+                row.SetInstalling(true, "导入中…");
                 result = await ContentInstaller.InstallFileAsync(
-                    inst, kind.Value, tmp, cand.FileName, worldName, _cts.Token);
+                    targetInst, kind.Value, tmp, cand.FileName, worldName, _cts.Token);
             }
 
             StatusMessage = result.Message;
 
             if (result.Ok)
             {
-                _log(LogKind.Ok, $"{Title}：{row.Title} {cand.Version} → {result.InstalledPath ?? inst.GameDir}");
-                StatusMessage = $"{result.Message}（{size / 1024.0 / 1024.0:0.#} MB）";
+                _log(LogKind.Ok, $"{Title}：{row.Title} {cand.Version} → {result.InstalledPath ?? targetInst.GameDir}");
 
-                // 整合包装完不等于能玩。包是用来"配出一个能跑的游戏环境"的，
-                // 光把 Mod 铺进 mods/ 只会让游戏带着一堆 Mod 起不来：它要求的
-                // 那个加载器版本本机可能压根没装，实例的版本也还指着原来那个。
-                // 这一步把"装得下来"补成"装完能开局"。
+                // Mod 安装完成后，像 PCL2 一样自动补齐必需前置依赖（如 Fabric API / Cloth Config）
+                var extraDeps = 0;
+                if (kind == ContentKind.Mod && cand.DependencyIds.Count > 0)
+                {
+                    row.SetInstalling(true, "补前置…");
+                    extraDeps = await AutoInstallModDependenciesAsync(targetInst, cand, mc, loader);
+                }
+
+                var extraNote = extraDeps > 0 ? $"，并自动补齐 {extraDeps} 个必需前置" : "";
+                if (kind == ContentKind.Shader && !HasShaderLoaderMod(targetInst))
+                    extraNote += "（提示：进游戏前需在 Mod 栏安装 Iris 或 Oculus 才能启用光影）";
+
+                StatusMessage = $"{result.Message}（{size / 1024.0 / 1024.0:0.#} MB）{extraNote}";
+
+                // 整合包装完后补齐 Minecraft 原版、加载器与运行库，并切换到新实例
                 if (kind == ContentKind.ModPack)
-                    await InstallPackEnvironmentAsync(inst, plan);
+                {
+                    row.SetInstalling(true, "装加载器…");
+                    await InstallPackEnvironmentAsync(targetInst, plan);
+                }
 
-                // 装完把收藏也顺手点一下？不 —— 收藏是用户的意愿，不替他决定。
+                row.SetInstalled(true, extraDeps > 0 ? $"已装 (+{extraDeps}前置)" : "已安装");
+
                 if (kind == ContentKind.World || kind == ContentKind.Datapack)
                     RefreshWorlds();
+
+                _onInstanceUpdated?.Invoke();
             }
             else
             {
                 _log(LogKind.Warning, $"{Title}：{row.Title} 安装失败 —— {result.Message}");
+                row.SetInstalling(false, "重试安装");
             }
         }
         catch (OperationCanceledException)
         {
             StatusMessage = "安装已取消。";
+            row.SetInstalling(false, "安装");
         }
         catch (Exception ex)
         {
-            // 界面上只给"人话"。异常类型写进日志 —— 排查时要能分清网络超时、
-            // 磁盘满，还是代码自己炸了，但用户看的是那句提示，
-            // 「（IOException）」这种后缀对他没有意义，只会让提示更像乱码。
             StatusMessage = $"安装失败：{ex.Message}";
             _log(LogKind.Error, $"{Title}：{row.Title} 安装异常 {ex.GetType().Name} —— {ex.Message}");
+            row.SetInstalling(false, "重试安装");
         }
         finally
         {
@@ -595,6 +785,177 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
             {
                 try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* 留着无害 */ }
             }
+        }
+    }
+
+    /// <summary>
+    /// 通过链接直接下载并自动导入（支持 Modrinth 详情页链接，以及任意 .mrpack/.zip/.jar/.rar/.7z 直链）。
+    /// </summary>
+    public async Task InstallFromUrlAsync(string rawUrl)
+    {
+        if (IsBusy) return;
+        var url = (rawUrl ?? "").Trim();
+        if (!Uri.TryCreate(url, UriKind.Absolute, out _))
+        {
+            StatusMessage = "请输入有效的 http:// 或 https:// 下载链接。";
+            return;
+        }
+
+        // 情形 1：Modrinth 页面链接（如 https://modrinth.com/mod/sodium 或 /shader/bsl-shaders）
+        var (mrType, slug) = ModDownloader.TryParseModrinthUrl(url);
+        if (!string.IsNullOrWhiteSpace(slug))
+        {
+            var projectType = string.IsNullOrEmpty(mrType) ? ProjectType : mrType;
+            var syntheticRow = new ContentRow
+            {
+                ProjectId = slug,
+                Slug = slug,
+                Title = slug,
+                ProjectType = projectType,
+                Badge = Title,
+            };
+            await InstallAsync(syntheticRow);
+            return;
+        }
+
+        // 情形 2：文件直链（整合包 / Mod / 光影包 / 资源包 / 存档）→ 下载后走统一自动识别导入
+        IsBusy = true;
+        var tmp = "";
+        try
+        {
+            Directory.CreateDirectory(_tempDir);
+            var guessedName = Path.GetFileName(new Uri(url).AbsolutePath);
+            if (string.IsNullOrWhiteSpace(guessedName) || !guessedName.Contains('.'))
+                guessedName = "download.zip";
+
+            tmp = Path.Combine(_tempDir, $"{Guid.NewGuid():N}_{ContentInstaller.SafeName(guessedName, "download.zip")}");
+            StatusMessage = $"正在从链接下载 {guessedName}…";
+            _log(LogKind.Info, $"通过链接下载：{url}");
+
+            var progress = new Progress<DownloadProgress>(p =>
+            {
+                StatusMessage = $"正在下载：{p.Text}";
+                _onProgress?.Invoke($"正在下载 {p.Name} ({(int)(p.Fraction * 100)}/100)");
+            });
+
+            var (ok, _) = await _downloader.DownloadUrlAsync(url, tmp, progress, _cts.Token);
+            if (!ok || !File.Exists(tmp))
+            {
+                StatusMessage = "链接下载失败，请检查地址是否可直接访问或检查代理设置。";
+                return;
+            }
+
+            if (_importDownloadedFiles is not null)
+            {
+                StatusMessage = $"下载完成，正在自动识别并导入 {guessedName}…";
+                // 释放 IsBusy，避免 DropFilesAsync 内部回调 InstallLocalPackAsync 时被 IsBusy 拦下
+                IsBusy = false;
+                var summary = await _importDownloadedFiles([tmp]);
+                StatusMessage = string.IsNullOrWhiteSpace(summary) ? "导入完成。" : summary.Replace('\n', ' ');
+                _onInstanceUpdated?.Invoke();
+            }
+            else if (Kind is { } k && k != ContentKind.ModPack)
+            {
+                var r = await ContentInstaller.InstallFileAsync(_instance(), k, tmp, guessedName, null, _cts.Token);
+                StatusMessage = r.Message;
+            }
+            else
+            {
+                StatusMessage = $"已下载到：{tmp}";
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "下载已取消。";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"链接导入失败：{ex.Message}";
+            _log(LogKind.Error, $"链接导入异常：{ex.Message}");
+        }
+        finally
+        {
+            IsBusy = false;
+            if (tmp.Length > 0)
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+            }
+        }
+    }
+
+    /// <summary>自动递归补齐 Mod 的必需前置依赖（最多 12 个，防止依赖环）。</summary>
+    private async Task<int> AutoInstallModDependenciesAsync(
+        GameInstance inst, ModDownloadCandidate root, string mcVersion, string loader)
+    {
+        var installed = 0;
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { root.ProjectId };
+        var queue = new Queue<string>(root.DependencyIds);
+
+        while (queue.Count > 0 && installed < 12)
+        {
+            _cts.Token.ThrowIfCancellationRequested();
+            var depId = queue.Dequeue();
+            if (string.IsNullOrWhiteSpace(depId) || !visited.Add(depId)) continue;
+
+            try
+            {
+                var depCand = await _downloader.FindModrinthByIdAsync(depId, mcVersion, loader, _cts.Token);
+                if (depCand is null) continue;
+
+                var modsDir = ContentPaths.TargetDir(inst, ContentKind.Mod);
+                var expectedDest = ContentInstaller.ResolveInside(modsDir, ContentInstaller.SafeName(depCand.FileName, "dep.jar"));
+                if (expectedDest is not null && File.Exists(expectedDest)) continue;
+
+                var depTmp = Path.Combine(_tempDir, Guid.NewGuid().ToString("N") + ".jar");
+                try
+                {
+                    StatusMessage = $"正在自动补齐前置依赖：{depCand.Name}…";
+                    if (!await _downloader.DownloadWithRetryAsync(depCand, depTmp, null, maxAttempts: 2, _cts.Token))
+                        continue;
+
+                    var r = await ContentInstaller.InstallFileAsync(
+                        inst, ContentKind.Mod, depTmp, depCand.FileName, null, _cts.Token);
+                    if (r.Ok)
+                    {
+                        installed++;
+                        _log(LogKind.Ok, $"自动补齐前置：{depCand.Name} ({depCand.FileName})");
+                        foreach (var sub in depCand.DependencyIds)
+                            if (!visited.Contains(sub)) queue.Enqueue(sub);
+                    }
+                }
+                finally
+                {
+                    try { if (File.Exists(depTmp)) File.Delete(depTmp); } catch { }
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch
+            {
+                // 单个前置补齐失败不影响主 Mod 使用
+            }
+        }
+
+        return installed;
+    }
+
+    /// <summary>检查实例 mods 目录里是否已经装了常见的光影加载器（Iris / Oculus / OptiFine）。</summary>
+    private static bool HasShaderLoaderMod(GameInstance inst)
+    {
+        try
+        {
+            var modsDir = Path.Combine(inst.GameDir, "mods");
+            if (!Directory.Exists(modsDir)) return false;
+
+            return Directory.EnumerateFiles(modsDir, "*.jar")
+                .Select(Path.GetFileName)
+                .OfType<string>()
+                .Any(n => n.Contains("iris", StringComparison.OrdinalIgnoreCase)
+                       || n.Contains("oculus", StringComparison.OrdinalIgnoreCase)
+                       || n.Contains("optifine", StringComparison.OrdinalIgnoreCase));
+        }
+        catch
+        {
+            return true;
         }
     }
 
@@ -663,9 +1024,18 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
                     s => _log(LogKind.Info, $"{Title}：{s}"),
                     _cts.Token);
 
+                // 补全加载器自身对应的客户端启动环境（libraries / assets / natives），装完即可直接启动
+                StatusMessage = $"正在补全 {r.VersionId} 的启动文件…";
+                using (var baseInstaller = new PclLike.Core.Storage.Downloader())
+                {
+                    var envInstaller = new PclLike.Core.Minecraft.InstanceInstaller(_launcherRoot, baseInstaller);
+                    await envInstaller.InstallAsync(r.VersionId, null, _cts.Token);
+                }
+
                 // 把实例指到这个版本上 —— 不然"当前实例"还是原来那个，
                 // 玩家点启动游戏跑的仍然是没有 Mod 的原版。
                 inst.VersionId = r.VersionId;
+                inst.Loader = plan.LoaderName.ToLowerInvariant();
 
                 // 存盘 —— 只改内存里的对象没用，下次开启动器读的还是文件。
                 try { new PclLike.Core.Storage.InstanceStore(_launcherRoot).Save(inst); }
@@ -677,9 +1047,9 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
                 foreach (var w in r.Warnings.Take(5))
                     _log(LogKind.Warning, $"{Title}：加载器警告 —— {w}");
 
-                _log(LogKind.Ok, $"{Title}：实例已指向 {r.VersionId}");
+                _log(LogKind.Ok, $"{Title}：实例「{inst.Name}」已就绪（{r.VersionId}），可直接点击启动游戏");
 
-                StatusMessage = $"{StatusMessage}完成：{r.VersionId}。别忘了确认这个实例的版本选的是它。";
+                StatusMessage = $"✓ 整合包已装好并切换到新实例「{inst.Name}」（{r.VersionId}），回到「启动」页即可直接玩！";
             }
         }
         catch (OperationCanceledException)
@@ -986,7 +1356,7 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
             Sha1 = file.Sha1,
         };
 
-        return await _downloader.DownloadAsync(cand, destPath, null, ct);
+        return await _downloader.DownloadWithRetryAsync(cand, destPath, null, maxAttempts: 2, ct);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -1137,6 +1507,8 @@ public sealed class ContentViewModel : ObservableObject, IDisposable
             foreach (var row in rows) Favorites.Add(row);
         });
 
+        _ = LoadIconsAsync(rows);
+
         if (IsFavoriteTab)
             StatusMessage = Favorites.Count == 0
                 ? "收藏夹是空的。在 Mod/整合包/资源包/光影包那一栏点一下「收藏」就会出现在这里。"
@@ -1221,11 +1593,89 @@ public sealed class ContentRow : ObservableObject
 
     public string LoadersText { get; init; } = "";
 
+    /// <summary>中文主题分类徽章（如 冒险 / 科技 / 魔法 / 优化），让玩家一眼看出是什么类型的整合包。</summary>
+    public IReadOnlyList<string> CategoryBadges { get; init; } = [];
+
+    /// <summary>支持的游戏版本摘要（如 1.20.1 ~ 1.21.1）。</summary>
+    public string VersionsText { get; init; } = "";
+
+    private ImageSource? _iconImage;
+    public ImageSource? IconImage => _iconImage;
+    public bool HasIconImage => _iconImage is not null;
+    public string FallbackGlyph => string.IsNullOrWhiteSpace(Title) ? "M" : Title.Trim()[..1].ToUpperInvariant();
+
+    internal void SetIcon(ImageSource img)
+    {
+        if (ReferenceEquals(_iconImage, img)) return;
+        _iconImage = img;
+        OnPropertyChanged(nameof(IconImage));
+        OnPropertyChanged(nameof(HasIconImage));
+    }
+
+    public string MetaLineText
+    {
+        get
+        {
+            var bits = new List<string>();
+            if (VersionsText.Length > 0) bits.Add($"版本 {VersionsText}");
+            if (LoadersText.Length > 0) bits.Add(LoadersText);
+            return string.Join("　·　", bits);
+        }
+    }
+
+    public bool HasMetaLine => MetaLineText.Length > 0;
+
     private bool _isFavorite;
+    private bool _isInstalling;
+    private bool _isInstalled;
+    private string _installButtonText = "安装";
 
     public bool IsFavorite => _isFavorite;
 
     public string FavoriteButtonText => _isFavorite ? "已收藏" : "收藏";
+
+    public bool IsInstalling => _isInstalling;
+    public bool IsInstalled => _isInstalled;
+    public bool CanInstall => !_isInstalling;
+    public string InstallButtonText => _installButtonText;
+
+    /// <summary>对应的 Modrinth 网页链接，方便用户查看详情。</summary>
+    public string WebUrl
+    {
+        get
+        {
+            var seg = ProjectType switch
+            {
+                "modpack" => "modpack",
+                "resourcepack" => "resourcepack",
+                "shader" => "shader",
+                "datapack" => "datapack",
+                _ => "mod",
+            };
+            var id = !string.IsNullOrWhiteSpace(Slug) ? Slug : ProjectId;
+            return $"https://modrinth.com/{seg}/{id}";
+        }
+    }
+
+    internal void SetInstalling(bool installing, string label)
+    {
+        _isInstalling = installing;
+        _installButtonText = label;
+        OnPropertyChanged(nameof(IsInstalling));
+        OnPropertyChanged(nameof(CanInstall));
+        OnPropertyChanged(nameof(InstallButtonText));
+    }
+
+    internal void SetInstalled(bool installed, string label)
+    {
+        _isInstalling = false;
+        _isInstalled = installed;
+        _installButtonText = label;
+        OnPropertyChanged(nameof(IsInstalling));
+        OnPropertyChanged(nameof(IsInstalled));
+        OnPropertyChanged(nameof(CanInstall));
+        OnPropertyChanged(nameof(InstallButtonText));
+    }
 
     internal void SetFavorite(bool value)
     {
@@ -1287,6 +1737,79 @@ public sealed class ContentRow : ObservableObject
         return t is "—" or "–" or "-" ? "" : t;
     }
 
+    private static readonly Dictionary<string, string> CategoryZh = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["adventure"] = "冒险",
+        ["challenging"] = "高难",
+        ["combat"] = "战斗",
+        ["kitchen-sink"] = "大型综合",
+        ["lightweight"] = "轻量",
+        ["magic"] = "魔法",
+        ["multiplayer"] = "联机",
+        ["optimization"] = "性能优化",
+        ["quests"] = "任务线",
+        ["technology"] = "科技",
+        ["decoration"] = "建筑装饰",
+        ["equipment"] = "装备",
+        ["food"] = "食物农业",
+        ["game-mechanics"] = "玩法机制",
+        ["library"] = "前置库",
+        ["management"] = "管理",
+        ["minigame"] = "小游戏",
+        ["mobs"] = "生物",
+        ["social"] = "社交",
+        ["storage"] = "存储",
+        ["transportation"] = "交通",
+        ["utility"] = "实用工具",
+        ["worldgen"] = "世界生成",
+        ["atmosphere"] = "氛围",
+        ["bloom"] = "泛光",
+        ["cartoon"] = "卡通",
+        ["colored-lighting"] = "彩色光照",
+        ["cursed"] = "魔性",
+        ["fantasy"] = "奇幻",
+        ["foliage"] = "植被",
+        ["path-tracing"] = "光追",
+        ["pbr"] = "PBR",
+        ["potato"] = "低配可用",
+        ["realistic"] = "写实",
+        ["reflections"] = "反射",
+        ["semi-realistic"] = "半写实",
+        ["shadows"] = "阴影",
+        ["vanilla-like"] = "原版风格",
+        ["high"] = "高配",
+        ["medium"] = "中配",
+        ["low"] = "低配",
+        ["screenshot"] = "截图",
+        ["simplistic"] = "简约",
+        ["themed"] = "主题",
+        ["tweaks"] = "微调",
+    };
+
+    private static IReadOnlyList<string> FormatCategories(IReadOnlyList<string> raw)
+    {
+        if (raw.Count == 0) return [];
+        var list = new List<string>(4);
+        foreach (var c in raw)
+        {
+            if (CategoryZh.TryGetValue(c, out var zh) && !list.Contains(zh))
+                list.Add(zh);
+            if (list.Count >= 4) break;
+        }
+        return list;
+    }
+
+    private static string FormatVersionRange(IReadOnlyList<string> versions)
+    {
+        if (versions.Count == 0) return "";
+        var releases = versions
+            .Where(v => Regex.IsMatch(v, @"^1\.\d+(?:\.\d+)?$"))
+            .ToList();
+        if (releases.Count == 0) return versions[^1];
+        if (releases.Count == 1) return releases[0];
+        return $"{releases[0]} ~ {releases[^1]}";
+    }
+
     public static ContentRow FromSearch(ModSearchResult r, bool isFavorite, string badge = "") => new()
     {
         ProjectId = r.ProjectId,
@@ -1299,6 +1822,8 @@ public sealed class ContentRow : ObservableObject
         Badge = badge,
         DownloadsText = r.DownloadsText,
         LoadersText = CleanLoaders(r.LoadersText),
+        CategoryBadges = FormatCategories(r.Categories),
+        VersionsText = FormatVersionRange(r.GameVersions),
         _isFavorite = isFavorite,
     };
 

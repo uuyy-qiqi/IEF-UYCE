@@ -18,6 +18,7 @@ namespace PclLike.Gui;
 public partial class LogWindow : Window
 {
     private readonly MainViewModel _vm;
+    private bool _scrollScheduled;
 
     public LogWindow(MainViewModel vm)
     {
@@ -27,6 +28,7 @@ public partial class LogWindow : Window
         DataContext = vm;
 
         ((INotifyCollectionChanged)vm.LogLines).CollectionChanged += OnLogChanged;
+        Closed += (_, _) => ((INotifyCollectionChanged)_vm.LogLines).CollectionChanged -= OnLogChanged;
 
         Loaded += (_, _) =>
         {
@@ -40,8 +42,16 @@ public partial class LogWindow : Window
     {
         UpdateCount();
 
-        if (FollowBox.IsChecked == true)
-            ScrollToEnd();
+        if (FollowBox.IsChecked == true && !_scrollScheduled)
+        {
+            _scrollScheduled = true;
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, () =>
+            {
+                _scrollScheduled = false;
+                if (IsLoaded && FollowBox.IsChecked == true)
+                    ScrollToEnd();
+            });
+        }
     }
 
     private void UpdateCount()

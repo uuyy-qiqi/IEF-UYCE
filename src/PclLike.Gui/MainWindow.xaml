@@ -6,7 +6,7 @@
         Title="IEF-UYCE版" Height="720" Width="1120"
         Icon="Assets/pclike.png"
         MinHeight="560" MinWidth="900"
-        Background="{StaticResource BgBrush}"
+        Background="{DynamicResource BgBrush}"
         WindowStyle="None"
         AllowsTransparency="True"
         AllowDrop="True"
@@ -81,7 +81,7 @@
     <!-- ══════════════════════════════════════════════════════════
          顶栏：蓝色底 + 居中四个大页签 + 右侧账号/窗口按钮
          ══════════════════════════════════════════════════════════ -->
-    <Border Grid.Row="0" Background="{StaticResource TopBarBrush}" Padding="0"
+    <Border Grid.Row="0" Background="{DynamicResource TopBarBrush}" Padding="0"
             MouseLeftButtonDown="TopBar_MouseDown">
       <Grid Height="52">
         <Grid.ColumnDefinitions>
@@ -237,7 +237,7 @@
       <!-- ── 左栏 ──
            上面常驻人卡，下面按大页签二选一：非启动页是分组导航，启动页让位给启动按钮。
            人卡不画卡片底、不画边框，只留头像 + 名字，直接浮在毛玻璃上。 -->
-      <Border Grid.Column="0" Background="{StaticResource RailBrush}"
+      <Border Grid.Column="0" Background="{DynamicResource RailBrush}"
               BorderBrush="{StaticResource BorderBrush2}" BorderThickness="0,0,1,0">
         <Grid>
           <Grid.RowDefinitions>
@@ -396,7 +396,7 @@
                 </Grid>
 
                 <!-- Java / 内存 / 游戏目录 -->
-                <Border Background="{StaticResource BgBrush}" CornerRadius="5"
+                <Border Background="{DynamicResource BgBrush}" CornerRadius="5"
                         Padding="13,11" Margin="0,14,0,0">
                   <Grid>
                     <Grid.ColumnDefinitions>
@@ -608,37 +608,75 @@
              共用这一屏，靠左栏导航切栏目。 -->
         <Grid x:Name="PageContent" Visibility="Collapsed" DataContext="{Binding Content}">
           <Grid.Resources>
-            <!-- 搜索结果和收藏项共用这一个行模板：它们都变成 ContentRow -->
+            <!-- 搜索结果和收藏项共用这一个行模板：带封面图标 + 中文分类标签 + 版本范围 -->
             <DataTemplate x:Key="ContentRowTpl">
-              <Border Style="{StaticResource CardRow}" Margin="0,0,0,6">
+              <Border Style="{StaticResource CardRow}" Margin="0,0,0,8">
                 <Grid>
                   <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                   </Grid.ColumnDefinitions>
 
-                  <StackPanel Grid.Column="0" Margin="0,0,12,0">
-                    <StackPanel Orientation="Horizontal">
-                      <TextBlock Text="{Binding Title}" FontSize="13.5" FontWeight="SemiBold"
-                                 Foreground="{StaticResource TextBrush}" TextTrimming="CharacterEllipsis"/>
+                  <!-- 左侧封面图标（异步加载，未加载完成时显示圆角首字母占位） -->
+                  <Border Grid.Column="0" Width="56" Height="56" CornerRadius="8"
+                          Margin="0,0,14,0" VerticalAlignment="Center"
+                          Background="{StaticResource SelectedBrush}" ClipToBounds="True">
+                    <Grid>
+                      <TextBlock Text="{Binding FallbackGlyph}" FontSize="20" FontWeight="Bold"
+                                 Foreground="{StaticResource PrimaryBrush}"
+                                 HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                      <Image Source="{Binding IconImage}" Stretch="UniformToFill"
+                             RenderOptions.BitmapScalingMode="HighQuality"
+                             Visibility="{Binding HasIconImage, Converter={StaticResource BoolVis}}"/>
+                    </Grid>
+                  </Border>
+
+                  <!-- 中间信息：标题 + 类型与中文分类徽章 + 简介 + 版本/加载器 -->
+                  <StackPanel Grid.Column="1" Margin="0,0,12,0" VerticalAlignment="Center">
+                    <WrapPanel Orientation="Horizontal">
+                      <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="SemiBold"
+                                 Foreground="{StaticResource TextBrush}" TextTrimming="CharacterEllipsis"
+                                 VerticalAlignment="Center" Margin="0,0,6,0"/>
                       <Border Background="{StaticResource SelectedBrush}" CornerRadius="3"
-                              Padding="6,1,6,2" Margin="8,1,0,0" VerticalAlignment="Center">
-                        <TextBlock Text="{Binding TypeText}" FontSize="10.5"
+                              Padding="6,1,6,2" Margin="2,1,4,1" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding TypeText}" FontSize="10.5" FontWeight="SemiBold"
                                    Foreground="{StaticResource PrimaryLoBrush}"/>
                       </Border>
-                    </StackPanel>
+                      <ItemsControl ItemsSource="{Binding CategoryBadges}" VerticalAlignment="Center">
+                        <ItemsControl.ItemsPanel>
+                          <ItemsPanelTemplate>
+                            <WrapPanel Orientation="Horizontal"/>
+                          </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate>
+                            <Border Background="#18387BFF" BorderBrush="#33387BFF" BorderThickness="1"
+                                    CornerRadius="3" Padding="5,0,5,1" Margin="0,1,4,1">
+                              <TextBlock Text="{Binding}" FontSize="10"
+                                         Foreground="{StaticResource PrimaryBrush}"/>
+                            </Border>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                    </WrapPanel>
+
                     <TextBlock Text="{Binding SubtitleText}" FontSize="11.5" TextWrapping="Wrap"
                                Foreground="{StaticResource TextMutedBrush}" Margin="0,4,0,0"/>
-                    <TextBlock Text="{Binding LoadersText}" FontSize="11"
-                               Foreground="{StaticResource TextMutedBrush}" Margin="0,2,0,0"
-                               Visibility="{Binding HasLoaderText, Converter={StaticResource BoolVis}}"/>
+                    <TextBlock Text="{Binding MetaLineText}" FontSize="11"
+                               Foreground="{StaticResource TextSoftBrush}" Margin="0,3,0,0"
+                               Visibility="{Binding HasMetaLine, Converter={StaticResource BoolVis}}"/>
                   </StackPanel>
 
-                  <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                  <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="详情" Style="{StaticResource FlatButton}"
+                            Padding="10,5" MinWidth="48" Tag="{Binding}" Click="ContentOpenWeb_Click"
+                            ToolTip="在浏览器中打开 Modrinth 项目页"/>
                     <Button Content="{Binding FavoriteButtonText}" Style="{StaticResource FlatButton}"
-                            Padding="12,5" MinWidth="60" Tag="{Binding}" Click="ContentFav_Click"/>
-                    <Button Content="安装" Style="{StaticResource PrimaryButton}"
-                            Padding="16,5" MinWidth="60" Margin="8,0,0,0"
+                            Padding="12,5" MinWidth="60" Margin="6,0,0,0" Tag="{Binding}" Click="ContentFav_Click"/>
+                    <Button Content="{Binding InstallButtonText}" Style="{StaticResource PrimaryButton}"
+                            Padding="16,5" MinWidth="68" Margin="8,0,0,0"
+                            IsEnabled="{Binding CanInstall}"
                             Tag="{Binding}" Click="ContentInstall_Click"/>
                   </StackPanel>
                 </Grid>
@@ -708,6 +746,8 @@
 
                 <TextBox x:Name="ContentQueryBox" Grid.Column="0" Height="32"
                          VerticalContentAlignment="Center" Padding="8,0"
+                         KeyDown="ContentQueryBox_KeyDown"
+                         ToolTip="输入关键词搜索，或直接粘贴 Modrinth 链接 / 文件直链按回车一键下载导入"
                          Text="{Binding SearchQuery, UpdateSourceTrigger=PropertyChanged}"/>
 
                 <TextBox Grid.Column="1" Width="104" Height="32" Margin="8,0,0,0"
@@ -726,8 +766,23 @@
                         Click="ContentSearch_Click" IsEnabled="{Binding CanSearch}"/>
               </Grid>
 
-              <TextBlock Text="{Binding SearchFilterText}" FontSize="11.5"
-                         Foreground="{StaticResource TextMutedBrush}" Margin="0,8,0,0"/>
+              <Grid Margin="0,8,0,0">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding SearchFilterText}" FontSize="11.5"
+                           VerticalAlignment="Center"
+                           Foreground="{StaticResource TextMutedBrush}"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                  <Button Content="链接下载导入" Style="{StaticResource FlatButton}" Padding="10,4"
+                          FontSize="11.5" Click="ContentUrlImport_Click"
+                          ToolTip="粘贴 Modrinth 页面链接或 .mrpack / .zip / .jar 直链，自动下载并导入"/>
+                  <Button Content="打开目标目录" Style="{StaticResource FlatButton}" Padding="10,4"
+                          FontSize="11.5" Margin="6,0,0,0" Click="OpenContentFolder_Click"
+                          ToolTip="打开当前实例对应的 mods / shaderpacks / resourcepacks 目录"/>
+                </StackPanel>
+              </Grid>
 
               <!-- 数据包要选一个世界 -->
               <Grid Margin="0,10,0,0"
@@ -767,9 +822,15 @@
           <!-- 列表 -->
           <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto" Padding="22,14,22,18">
             <Grid>
-              <!-- 搜索结果 -->
-              <ItemsControl ItemsSource="{Binding Results}" ItemTemplate="{StaticResource ContentRowTpl}"
-                            Visibility="{Binding ShowSearchPanel, Converter={StaticResource BoolVis}}"/>
+              <!-- 搜索结果 + 底部「加载更多」按钮 -->
+              <StackPanel Visibility="{Binding ShowSearchPanel, Converter={StaticResource BoolVis}}">
+                <ItemsControl ItemsSource="{Binding Results}" ItemTemplate="{StaticResource ContentRowTpl}"/>
+                <Button Content="{Binding LoadMoreText}" Style="{StaticResource FlatButton}"
+                        HorizontalAlignment="Center" Padding="24,8" Margin="0,8,0,4"
+                        IsEnabled="{Binding CanSearch}"
+                        Visibility="{Binding HasMoreResults, Converter={StaticResource BoolVis}}"
+                        Click="ContentLoadMore_Click"/>
+              </StackPanel>
 
               <!-- 世界列表 -->
               <ItemsControl ItemsSource="{Binding Worlds}" ItemTemplate="{StaticResource WorldRowTpl}"
@@ -1019,7 +1080,7 @@
                 <!-- 内存占用条：系统已用 / 游戏分配 / 剩余。
                      三段宽度由 VM 换算成星值，加起来铺满整条。 -->
                 <Border Height="8" CornerRadius="3" Margin="0,14,0,0"
-                        Background="{StaticResource BgBrush}" ClipToBounds="True">
+                        Background="{DynamicResource BgBrush}" ClipToBounds="True">
                   <Grid>
                     <Grid.ColumnDefinitions>
                       <ColumnDefinition Width="{Binding MemUsedStar}"/>
@@ -1235,6 +1296,21 @@
                       <ColumnDefinition Width="118"/>
                       <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="窗口背景" FontSize="13"
+                               Foreground="{StaticResource TextSoftBrush}" VerticalAlignment="Center"/>
+                    <ComboBox Grid.Column="1" SelectedValuePath="Tag"
+                              SelectedValue="{Binding Config.BackgroundMode, Mode=TwoWay}"
+                              SelectionChanged="BackgroundMode_Changed">
+                      <ComboBoxItem Content="纯白不透明（清晰易读，推荐）" Tag="white"/>
+                      <ComboBoxItem Content="半透明（透出桌面背景）" Tag="transparent"/>
+                    </ComboBox>
+                  </Grid>
+
+                  <Grid Margin="0,0,0,5">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="118"/>
+                      <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0" Text="启动时展开日志" FontSize="13"
                                Foreground="{StaticResource TextSoftBrush}" VerticalAlignment="Center"/>
                     <ComboBox Grid.Column="1" SelectedValuePath="Tag"
@@ -1244,7 +1320,7 @@
                     </ComboBox>
                   </Grid>
 
-                  <TextBlock Text="主题色、背景图这类外观项还没做，所以这里不摆无效的开关。"
+                  <TextBlock Text="窗口背景可实时切换纯白或半透明，自动保存无需重启。"
                              FontSize="11.5" TextWrapping="Wrap" Margin="118,10,0,0"
                              Foreground="{StaticResource TextMutedBrush}"/>
                 </StackPanel>

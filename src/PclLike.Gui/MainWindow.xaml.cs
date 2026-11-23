@@ -989,11 +989,83 @@ public partial class MainWindow : Window
     private async void ContentSearch_Click(object sender, RoutedEventArgs e)
         => await _vm.Content.SearchAsync();
 
+    private async void ContentLoadMore_Click(object sender, RoutedEventArgs e)
+        => await _vm.Content.LoadMoreAsync();
+
+    private async void ContentQueryBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        e.Handled = true;
+        await _vm.Content.SearchAsync();
+    }
+
+    private async void ContentUrlImport_Click(object sender, RoutedEventArgs e)
+    {
+        var url = TextInputDialog.Ask(
+            this,
+            "通过链接下载并导入",
+            "粘贴 Modrinth 链接（如 https://modrinth.com/shader/bsl-shaders）或整合包/Mod/光影文件直链：",
+            "");
+
+        if (string.IsNullOrWhiteSpace(url)) return;
+
+        _vm.Tasks.Begin("链接下载导入");
+        OpenTasksWindow();
+
+        try
+        {
+            await _vm.Content.InstallFromUrlAsync(url);
+            RefreshInstanceCard();
+            _vm.Tasks.Finish();
+        }
+        catch
+        {
+            _vm.Tasks.Fail();
+        }
+    }
+
+    private void ContentOpenWeb_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not ContentRow row) return;
+        if (string.IsNullOrWhiteSpace(row.WebUrl)) return;
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = row.WebUrl,
+                UseShellExecute = true,
+            });
+        }
+        catch { }
+    }
+
     private async void ContentInstall_Click(object sender, RoutedEventArgs e)
     {
         if ((sender as FrameworkElement)?.Tag is not ContentRow row) return;
 
-        await _vm.Content.InstallAsync(row);
+        var isPack = string.Equals(row.ProjectType, "modpack", StringComparison.OrdinalIgnoreCase);
+        if (isPack)
+        {
+            _vm.Tasks.Begin($"下载整合包：{row.Title}");
+            OpenTasksWindow();
+        }
+
+        try
+        {
+            await _vm.Content.InstallAsync(row);
+            RefreshInstanceCard();
+
+            if (isPack)
+            {
+                if (row.IsInstalled) _vm.Tasks.Finish();
+                else _vm.Tasks.Fail();
+            }
+        }
+        catch
+        {
+            if (isPack) _vm.Tasks.Fail();
+        }
     }
 
     private void ContentFav_Click(object sender, RoutedEventArgs e)
@@ -1327,6 +1399,16 @@ public partial class MainWindow : Window
     /// 加 IsLoaded 判断是因为：绑定在窗口构造时就会把 SelectedValue 填进去，
     /// 那一下同样会触发 SelectionChanged —— 那时候窗口还没显示，没必要去探测。
     /// </summary>
+    private void BackgroundMode_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded) return;
+
+        var mode = (sender as ComboBox)?.SelectedValue as string ?? "white";
+        _vm.ApplyBackgroundMode(mode);
+        _vm.Persist();
+        _vm.AppendLog(LogKind.Info, $"窗口背景已切换为：{(mode == "transparent" ? "半透明" : "纯白不透明")}");
+    }
+
     private void ProxyMode_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (!IsLoaded) return;

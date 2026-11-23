@@ -70,12 +70,23 @@ public static class BundleImporter
     {
         using var zip = ZipFile.OpenRead(zipPath);
 
-        var entries = zip.Entries
-            .Select(x => x.FullName.Replace('\\', '/'))
-            .Where(x => x.Length > 0 && !x.EndsWith('/'))
-            .ToList();
+        // 一次性遍历 zip.Entries 同时缓存路径与解压大小，避免在循环里调用 zip.GetEntry() 造成 O(N²) 卡死
+        var entries = new List<(string Name, long Length)>(zip.Entries.Count);
+        var entryNames = new List<string>(zip.Entries.Count);
 
-        var prefix = FindMinecraftPrefix(entries);
+        foreach (var entry in zip.Entries)
+        {
+            var normalized = entry.FullName.Replace('\\', '/');
+            if (normalized.Length == 0 || normalized.EndsWith('/')) continue;
+
+            long len = 0;
+            try { len = entry.Length; } catch { }
+
+            entries.Add((normalized, len));
+            entryNames.Add(normalized);
+        }
+
+        var prefix = FindMinecraftPrefix(entryNames);
         var innerRoot = prefix.EndsWith(McMarker + "/", StringComparison.OrdinalIgnoreCase)
             ? prefix[..^(McMarker.Length + 1)]
             : prefix;
@@ -87,13 +98,13 @@ public static class BundleImporter
         long bytes = 0;
         var count = 0;
 
-        foreach (var e in entries)
+        foreach (var (e, len) in entries)
         {
             var rel = Slice(e, prefix);
             if (rel is null) continue;
 
             count++;
-            bytes += SafeLength(zip, e);
+            bytes += len;
 
             if (rel.StartsWith("versions/", StringComparison.OrdinalIgnoreCase))
             {
@@ -270,12 +281,6 @@ public static class BundleImporter
     {
         if (prefix.Length == 0) return name;
         return name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? name[prefix.Length..] : null;
-    }
-
-    private static long SafeLength(ZipArchive zip, string name)
-    {
-        try { return zip.GetEntry(name)?.Length ?? 0; }
-        catch { return 0; }
     }
 
     /// <summary>

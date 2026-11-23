@@ -184,7 +184,8 @@ public static class ModPackInstaller
                         + $"，{plan.Files.Count} 个文件）");
 
             // 1) 先铺覆盖文件：overrides 先、client-overrides 后（后者覆盖前者）
-            var applied = ApplyOverrides(zip, gameDir, log, ct);
+            // 放到后台线程执行，避免大型整合包数千个 overrides 文件阻塞 UI 线程
+            var applied = await Task.Run(() => ApplyOverrides(zip, gameDir, log, ct), ct).ConfigureAwait(false);
             if (applied > 0) log?.Report($"已覆盖 {applied} 个配置文件");
 
             // 2) 再逐个下文件。失败只记账，不打断
@@ -214,52 +215,74 @@ public static class ModPackInstaller
 
             async Task DownloadPassAsync(IReadOnlyList<ModPackFile> files, int round)
             {
-                for (var i = 0; i < files.Count; i++)
+                const int MaxParallel = 6;
+                using var gate = new SemaphoreSlim(MaxParallel, MaxParallel);
+                var sync = new object();
+                var finished = 0;
+
+                await Task.WhenAll(files.Select(async file =>
                 {
-                    ct.ThrowIfCancellationRequested();
-
-                    var file = files[i];
-
-                    var dest = ContentInstaller.ResolveInside(gameDir, file.Path);
-                    if (dest is null)
-                    {
-                        failed.Add(file);
-                        continue;
-                    }
-
-                    // 已经在了、而且内容对得上 → 不用再下一次。
-                    //
-                    // 整合包动辄几百 MB、十几分钟。没有这一条的话，重跑一次
-                    // （哪怕只是补上一篇里失败的那两三个文件）会把 49 个已经
-                    // 下好的文件全下第二遍 —— 用户为了 2 个文件等 10 分钟。
-                    // 只在 sha1 对得上时才跳；清单没给 sha1 就老实重下。
-                    if (round == 1 && MatchesSha1(dest, file.Sha1))
-                    {
-                        ok++;
-                        continue;
-                    }
-
-                    log?.Report(round == 1
-                        ? $"下载 {i + 1}/{files.Count}：{file.FileName}"
-                        : $"补下 {i + 1}/{files.Count}：{file.FileName}");
-
-                    bool done;
+                    await gate.WaitAsync(ct).ConfigureAwait(false);
                     try
                     {
-                        done = await fetcher(file, dest, ct).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        throw;
-                    }
-                    catch
-                    {
-                        done = false;
-                    }
+                        ct.ThrowIfCancellationRequested();
 
-                    if (done) ok++;
-                    else failed.Add(file);
-                }
+                        var dest = ContentInstaller.ResolveInside(gameDir, file.Path);
+                        if (dest is null)
+                        {
+                            lock (sync)
+                            {
+                                failed.Add(file);
+                                finished++;
+                            }
+                            return;
+                        }
+
+                        // 已经在了、而且内容对得上 → 不用再下一次
+                        if (round == 1 && MatchesSha1(dest, file.Sha1))
+                        {
+                            int cur;
+                            lock (sync)
+                            {
+                                ok++;
+                                cur = ++finished;
+                            }
+                            if (cur % 10 == 0 || cur == files.Count)
+                                log?.Report($"校验跳过 {cur}/{files.Count}：{file.FileName}");
+                            return;
+                        }
+
+                        bool done;
+                        try
+                        {
+                            done = await fetcher(file, dest, ct).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch
+                        {
+                            done = false;
+                        }
+
+                        int countNow;
+                        lock (sync)
+                        {
+                            if (done) ok++;
+                            else failed.Add(file);
+                            countNow = ++finished;
+                        }
+
+                        log?.Report(round == 1
+                            ? $"下载 {countNow}/{files.Count}：{file.FileName}"
+                            : $"补下 {countNow}/{files.Count}：{file.FileName}");
+                    }
+                    finally
+                    {
+                        gate.Release();
+                    }
+                })).ConfigureAwait(false);
             }
 
             var failures = failed
